@@ -1,0 +1,2 @@
+# pinocchio-casadi-examples
+
