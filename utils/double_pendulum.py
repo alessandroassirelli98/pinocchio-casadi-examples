@@ -12,7 +12,7 @@ def create_double_pendulum_model(with_display=True):
             M.rotation = pin.utils.rotate('z',-np.pi/2)
             g.placement = M
     # Next 10 lines are to initialize the viewer with the pendulum model.
-    robot.model.addFrame(pin.Frame('tip',2,pin.SE3(np.eye(3),np.array([0,0,0.2])),pin.OP_FRAME))
+    robot.model.addFrame(pin.Frame('tip',2,5,pin.SE3(np.eye(3),np.array([0,0,0.2])),pin.OP_FRAME))
     viz = pin.visualize.GepettoVisualizer(robot.model, robot.collision_model, robot.visual_model)
     try:
         viz.initViewer()
