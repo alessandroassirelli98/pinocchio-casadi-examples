@@ -66,6 +66,22 @@ cmake .. -DBUILD_PYTHON_BINDINGS_WITH_BOOST_MPFR_SUPPORT=OFF -DBUILD_WITH_CASADI
 make -sj8 install
 ```
 
+### Viewer
+
+You might consider to install Gepetto viewer 
+```
+sudo apt install robotpkg-py38-qt5-hpp-gui
+```
+
+Don't forget to start the viewer before executing the scripts needing it (otherwise you will typically get the following error "AttributeError: 'GepettoVisualizer' object has no attribute 'viewer'"):
+```
+gepetto-viewer
+```
+
+Alternatively, you will have to comment out the display command in the example scripts.
+
+
+
 ## Git commits
 
 The installation procedure as been check with HPP-FCL commit 39fde9cb and Pinocchio commit 74deb9ab.
