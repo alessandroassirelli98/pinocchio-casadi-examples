@@ -54,12 +54,16 @@ u0 = np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
                0.25720939, -0.51441314])
 
-#contact_frames = { i:f for i,f in enumerate(cmodel.frames) if "FOOT" in f.name }
 contactIds = [ i for i,f in enumerate(cmodel.frames) if "FOOT" in f.name ]
 
+pin.framesForwardKinematics(model,data,x0[:model.nq])
 robotweight = -sum([Y.mass for Y in model.inertias]) * model.gravity.linear[2]
+footRadius = np.mean([ data.oMf[c].translation[2] for c in contactIds ])
 
-### ACTION MODEL
+########################################################################################################
+### ACTION MODEL #######################################################################################
+########################################################################################################
+
 # The action model stores the computation of the dynamic -f- and cost -l- functions, both return by
 # calc as self.calc(x,u) -> [xnext=f(x,u),cost=l(x,u)]
 # The dynamics is obtained by RK4 integration of the pinocchio ABA function.
@@ -94,14 +98,12 @@ class CasadiActionModel:
         cdx = casadi.SX.sym("dx",self.ndx,1)
         cfs = [ casadi.SX.sym("f"+cmodel.frames[idf].name,3,1) for idf in self.contactIds ]
         
-        # acc = cpin.constraintDynamics(cmodel,cdata,cx[:nq],cx[nq:],ctau,
-        #                               self.contact_models,self.contact_datas,self.prox_settings)
-
         ### Build force list for ABA
         forces = [ cpin.Force.Zero() for _ in self.cmodel.joints ]
-        # I am supposing here that all contact frames are on separate joints. This should be asserted.
+        # I am supposing here that all contact frames are on separate joints. This is asserted below:
         assert( len( set( [ cmodel.frames[idf].parentJoint for idf in contactIds ]) ) == len(contactIds) )
         for f,idf in zip(cfs,self.contactIds):
+            # Contact forces introduced in ABA as spatial forces at joint frame.
             forces[cmodel.frames[idf].parentJoint] = cmodel.frames[idf].placement * cpin.Force(f,0*f)
         self.forces = cpin.StdVec_Force()
         for f in forces:
@@ -110,94 +112,131 @@ class CasadiActionModel:
         acc = cpin.aba( cmodel,cdata, cx[:nq],cx[nq:],ctau,self.forces )
         
         ### Casadi MX functions
-        # acceleration(x,u)
+        # acceleration(x,u,f)  = ABA(q,v,tau,f) with x=q,v, tau=u, and f built using StdVec_Force syntaxt
         self.acc = casadi.Function('acc', [cx,ctau]+cfs, [ acc ])
+        # com(x) = centerOfMass(x[:nq])
         self.com = casadi.Function('com', [cx],[ cpin.centerOfMass(cmodel,cdata,cx[:nq]) ])
-        # integrate(x,dx)
-        self.integrate = casadi.Function('plus', [cx,cdx],
+        # integrate(x,dx) =   [q+dq,v+dv],   with the q+dq function implemented with pin.integrate.
+        self.integrate = casadi.Function('xplus', [cx,cdx],
                                         [ casadi.vertcat(cpin.integrate(self.cmodel,cx[:nq],cdx[:nv]),
                                                          cx[-nv:]+cdx[-nv:]) ])
-        # integrate(q,v)
+        # integrate_q(q,dq) = pin.integrate(q,dq)
         self.integrate_q = casadi.Function('qplus', [cq,cv],
                                            [ cpin.integrate(self.cmodel,cq,cv) ])
         # Lie difference(x1,x2) = [ pin.difference(q1,q2),v2-v1 ]
-        self.difference = casadi.Function('minus', [cx,cx2],
+        self.difference = casadi.Function('xminus', [cx,cx2],
                                           [ casadi.vertcat(cpin.difference(self.cmodel,cx2[:nq],cx[:nq]),
                                                          cx2[nq:]-cx[nq:]) ])
 
-        #cpin.framesForwardKinematics(cmodel,cdata,cx[:nq],cx[nq:])
         cpin.forwardKinematics(cmodel,cdata,cx[:nq],cx[nq:],ca)
         cpin.updateFramePlacements(cmodel,cdata)
+        # feet[c](x) =  position of the foot <c> at configuration q=x[:nq]
         self.feet = [ casadi.Function('foot'+cmodel.frames[idf].name,
                                       [cx],[self.cdata.oMf[idf].translation]) for idf in contactIds ]
+        # Rfeet[c](x) =  orientation of the foot <c> at configuration q=x[:nq]
         self.Rfeet = [ casadi.Function('Rfoot'+cmodel.frames[idf].name,
                                        [cx],[self.cdata.oMf[idf].rotation]) for idf in contactIds ]
+        # vfeet[c](x) =  linear velocity of the foot <c> at configuration q=x[:nq] with vel v=x[nq:]
         self.vfeet = [ casadi.Function('vfoot'+cmodel.frames[idf].name,
                                        [cx],[cpin.getFrameVelocity( cmodel,cdata,idf,pin.LOCAL_WORLD_ALIGNED ).linear])
                        for idf in contactIds ]
+        # vfeet[c](x,a) =  linear acceleration of the foot <c> at configuration q=x[:nq] with vel v=x[nq:] and acceleration a
         self.afeet = [ casadi.Function('afoot'+cmodel.frames[idf].name,
                                        [cx,ca],[cpin.getFrameClassicalAcceleration( cmodel,cdata,idf,pin.LOCAL_WORLD_ALIGNED ).linear])
                        for idf in contactIds ]
 
         
     def calc(self,x, u, a, fs, ocp):
-        # Return xnext,cost
-        fs = [ fs[3 * i : 3 * i + 3] for i,_ in enumerate(self.contactIds) ]   # split
-        
+        '''
+        This function return xnext,cost
+        '''
+
         dt = self.dt
+
+        # First split the concatenated forces in 3d vectors.
+        fs = [ fs[3 * i : 3 * i + 3] for i,_ in enumerate(self.contactIds) ]   # split
+        # Split q,v from x
         nq,nv = self.cmodel.nq,self.cmodel.nv
+        # Formulate tau = [0_6,u]
         tau = casadi.vertcat( np.zeros(6), u )
 
-        # Euler integration
+        # Euler integration, using directly the acceleration <a> introduced as a slack variable.
         vnext = x[nq:] + a*dt
         qnext = self.integrate_q(x[:nq], vnext*dt)
         xnext = casadi.vertcat(qnext,vnext)
-        
+        # The acceleration <a> is then constrained to follow ABA.
+        ocp.subject_to( self.acc(x,tau,*fs ) == a )
+
+        # Cost functions:
         cost = 0
         cost += 1e-2*casadi.sumsqr(u-u0) * self.dt
         cost += 1e-1*casadi.sumsqr( self.difference(x,x0) ) * self.dt
         #cost += sum( [ casadi.sumsqr(f) for f in fs ] )
         
         ### OCP additional constraints
-        #for vfoot in self.vfeet:
-        #    ocp.subject_to( vfoot(x) == 0 )
         for afoot in self.afeet:
             ocp.subject_to( afoot(x,a) == 0 )
 
-        ocp.subject_to( self.acc(x,tau,*fs ) == a )
+        for f,R in zip(fs,self.Rfeet):   # for cone constrains
+            fw = R(x) @ f
+            opti.subject_to(fw[2]>=0)
+
+        #R0 = np.eye(3)
+        #cost += cpin.log3( self.Rfeet[0](x) @ R0 )
             
-        #for f,R in zip(fs,self.Rfeet):   # for cone constrains
-            #fw = R(x) @ f
-            #opti.subject_to(fw[2]>=0)
-        
         return xnext,cost
 
-seq = [ True ]*T
- 
+########################################################################################################
+### OCP PROBLEM ########################################################################################
+########################################################################################################
+
+# [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
+contactPattern = [] \
+    + [ [ 1,1,1,1 ] ] * 10 \
+    + [ [ 0,1,1,1 ] ] * 5  \
+    + [ [ 1,1,1,1 ] ] * 10 \
+    + [ [ 1,1,1,1 ] ]
+T = len(contactPattern)-1
+    
+def patternToId(pattern):
+    return tuple( contactIds[i] for i,c in enumerate(pattern) if c==1 )
+
+# In order to avoid creating to many casadi action model, we store in a dict one model for each contact pattern.
+contactSequence = [ patternToId(p) for p in contactPattern ]
+casadiActionModels = { contacts: CasadiActionModel(cmodel,contacts)  for contacts in set(contactSequence) }
+
 ### PROBLEM
 opti = casadi.Opti()
 # The control models are stored as a collection of shooting nodes called running models,
 # with an additional terminal model.
-runningModels = [ CasadiActionModel(cmodel, contactIds if seq[t] else []) for t in range(T) ]
-terminalModel = CasadiActionModel(cmodel,contactIds)
+runningModels = [ casadiActionModels[contactSequence[t]] for t in range(T) ]
+terminalModel = casadiActionModels[contactSequence[T]]
 
 # Decision variables
 dxs = [ opti.variable(model.ndx) for model in runningModels+[terminalModel] ]     # state variable
-acs = [ opti.variable(model.nv) for model in runningModels ]                   # acceleration
-us = [ opti.variable(model.nu) for model in runningModels ]                     # control variable
-fs = [ opti.variable(3*len(model.contactIds) ) for model in runningModels ]                     # contact force
-xs = [ m.integrate(x0,dx) for m,dx in zip(runningModels+[terminalModel],dxs) ]
+acs = [ opti.variable(model.nv) for model in runningModels ]                      # acceleration
+us =  [ opti.variable(model.nu) for model in runningModels ]                      # control variable
+fs =  [ opti.variable(3*len(model.contactIds) ) for model in runningModels ]      # contact force
+xs =  [ m.integrate(x0,dx) for m,dx in zip(runningModels+[terminalModel],dxs) ]
 
 # Roll out loop, summing the integral cost and defining the shooting constraints.
 totalcost = 0
-opti.subject_to(dxs[0] == np.zeros(2*cmodel.nv))
+opti.subject_to(dxs[0] == 0)
+# for foot in runningModels[0].feet:
+#     opti.subject_to(foot(xs[0])[2]==0)
 for t in range(T):
     
     xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti )
-    #opti.subject_to( xs[t + 1] == xnext )
-    opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
+    opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == 0 ) # np.zeros(2*cmodel.nv) )  # x' = f(x,u)
 
     totalcost += rcost
+
+    if t>0:
+        for i,c in enumerate(runningModels[t].contactIds):
+            if c not in runningModels[t-1].contactIds:
+                print(f'Impact for foot {i}:{c} at time {t}')
+                opti.subject_to( runningModels[t].feet[i](xs[t])[2] == footRadius )
+    
         
 opti.subject_to( xs[T][cmodel.nq:] == 0 )              # v_T = 0
 #opti.subject_to( xs[T][:3] == x0[:3] )              # x_T,y_T,z_T = x0,y0,z0
@@ -221,7 +260,14 @@ try:
     xs_sol = np.array([ opti.value(x) for x in xs ])
     us_sol = np.array([ opti.value(u) for u in us ])
     acs_sol = np.array([ opti.value(a) for a in acs ])
-    fs_sol = [ opti.value(f) for f in fs ]
+    fs_sol = [ np.split(opti.value(f),f.shape[0]//3) for f in fs ]
+    ### We reorganize fs_sol to have 4 contacts for each timestep, adding a 0 force when needed.
+    fs_sol0 = [ np.concatenate([ \
+                                f[runningModels[t].contactIds.index(c) ] if c in runningModels[t].contactIds
+                                else np.zeros(3)
+                                for i,c in enumerate(contactIds)   ])
+               for t,f in enumerate(fs_sol) ]
+    
 except:
     print('ERROR in convergence, plotting debug info.')
     dxs_sol = np.array([ opti.debug.value(x) for x in dxs ])
@@ -229,9 +275,10 @@ except:
     us_sol = np.array([ opti.debug.value(u) for u in us ])
     fs_sol = [ opti.value(f) for f in fs ]
 
-### CHECK
-### CHECK
-### CHECK
+### CHECK ######################################################################################################
+### CHECK ######################################################################################################
+### CHECK ######################################################################################################
+
 ha = []
 
 nq,nv = model.nq,model.nv
@@ -245,7 +292,7 @@ for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fs_sol,xs_
         vecfs.append(pin.Force.Zero())
     for i,idf in enumerate(m.contactIds):
         frame = model.frames[idf]
-        vecfs[frame.parentJoint] = frame.placement * pin.Force(f[3*i:3*i+3],np.zeros(3))
+        vecfs[frame.parentJoint] = frame.placement * pin.Force(f[i],np.zeros(3))
 
     a = pin.aba(model,data,x1[:nq],x1[nq:],tau,vecfs)
     ha.append(a.copy())
@@ -270,18 +317,22 @@ for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fs_sol,xs_
 
 
 # Gather forces in world frame
-f0s = []
+fs_world = []
 for t,m in enumerate(runningModels):
-    f = { i: np.zeros(3) for i in contactIds}
-    for i,idf in enumerate(m.contactIds):
-        pin.framesForwardKinematics(model, data, xs_sol[t, :nq])
-        f[idf] = data.oMf[idf].rotation @ fs_sol[t][3 * i : 3 * i + 3]
-    f0s.append( list(f.values()) )
-f0s = np.array([ np.concatenate(f) for f in f0s])
+    pin.framesForwardKinematics(model, data, xs_sol[t, :nq])
+    fs_world.append( np.concatenate([  data.oMf[idf].rotation @ fs_sol0[t][3*i:3*i+3] for i,idf in enumerate(contactIds) ]) )
+fs_world = np.array(fs_world)
+    
+import matplotlib.pylab as plt
+plt.ion()
+for i in range(3):
+    plt.subplot(3,1,i+1)
+    plt.plot(fs_world[:,i::3])
+
 
 np.save(open("/tmp/sol.npy", "wb"),
         {
             "xs": xs_sol,
             "us": us_sol,
             "acs": acs_sol,
-            "fs": np.array(fs_sol)})
+            "fs": np.array(fs_sol0)})
