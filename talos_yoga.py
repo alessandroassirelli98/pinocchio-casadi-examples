@@ -1,5 +1,5 @@
 '''
-minimizatio with constraints
+minimization with constraints
 
 Simple example with regularization cost, desired position and position constraints.
 
@@ -29,9 +29,7 @@ import time
 
 # Load the model both in pinocchio and pinocchio casadi
 robot = robex.load('talos')
-model = robot.model
 cmodel = cpin.Model(robot.model)
-data = model.createData()
 cdata = cmodel.createData()
 
 try:
@@ -41,8 +39,6 @@ try:
     viz.display(robot.q0)
 except:
     viz=None
-
-viz.display(robot.q0)
 
 # reference configuration
 q0 = robot.q0
@@ -66,7 +62,8 @@ IDX_LE = cmodel.getFrameId('arm_left_4_joint')
 IDX_RE = cmodel.getFrameId('arm_right_4_joint')
 
 # This is used in order to go from a configuration and the displacement to the final configuration.
-# Why pinocchio.integrate and not simply q = q0 + v*dt? q and v have different dimensions because q contains quaterniions and this can't be done
+# Why pinocchio.integrate and not simply q = q0 + v*dt? 
+# q and v have different dimensions because q contains quaterniions and this can't be done
 # So pinocchio.integrate(config, Dq)
 integrate = casadi.Function('integrate', [cq, cDq], [ cpin.integrate(cmodel,cq, cDq) ] )
 
@@ -122,7 +119,8 @@ qs = integrate(q0, Dqs)
 cost = casadi.sumsqr(qs - q0)
 
 # Distance between the hands
-cost += distance_cost * casadi.sumsqr(lg_position(qs) - rg_position(qs) - np.array([0, distance_btw_hands, 0]))  
+cost += distance_cost * casadi.sumsqr(lg_position(qs) - rg_position(qs) 
+                                     - np.array([0, distance_btw_hands, 0]))  
 
 # Cost on parallelism of the two hands
 r_ref = pin.utils.rotate('x', 3.14 / 2) # orientation target
@@ -133,7 +131,8 @@ cost += parallel_cost * casadi.sumsqr(log(lg_rotation(qs), r_ref))
 # Body in a straight position
 cost += straightness_body_cost * casadi.sumsqr(log(base_rotation(qs), base_rotation(q0)))
 
-cost +=  elbow_distance_cost *casadi.sumsqr(le_translation(qs)[1] - 2) + elbow_distance_cost *casadi.sumsqr(re_translation(qs)[1] + 2)
+cost +=  elbow_distance_cost *casadi.sumsqr(le_translation(qs)[1] - 2) \
+        + elbow_distance_cost *casadi.sumsqr(re_translation(qs)[1] + 2)
 
 opti.minimize(cost)
 
@@ -160,14 +159,17 @@ opti.subject_to(opti.bounded(-distance_btw_hands/2, rg_position(qs)[1], 0))
 ### ----------------------------------------------------------------------------- ###
 
 ### SOLVE
-def call(i):
-    qs_tmp = integrate(q0, opti.debug.value(Dqs)).full()
-    viz.display(qs_tmp)
+def call(i, nCalled=10):
+    if i % nCalled == 0:
+       qs_tmp = integrate(q0, opti.debug.value(Dqs)).full()
+       viz.display(qs_tmp)
+       time.sleep(0.2)
+
 
 # Pretty crude, but it shows what's going on
 # It becomes very slow, so just for seeing
 
-# opti.callback(call)
+opti.callback(call)
 
 opti.solver('ipopt')
 opti.set_initial(Dqs, np.zeros(nDq)) # This is optional since by default it's initialized with zeros
@@ -178,4 +180,5 @@ q_sol = integrate(q0, opti.value(Dqs)).full()
 
 ### VISUALIZATION
 
-viz.display(q_sol)
+if viz is not None:
+    viz.display(q_sol)
