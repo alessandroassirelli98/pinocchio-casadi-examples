@@ -24,7 +24,7 @@ import numpy as np
 import example_robot_data as robex 
 from pinocchio.visualize import GepettoVisualizer
 
-### LOAD AND DISPLAY PENDULUM
+### LOAD AND DISPLAY SOLO12
 robot = robex.load('solo12')
 model = robot.model
 data = model.createData()
@@ -67,6 +67,7 @@ feet = { idx: f.name for idx,f in enumerate(model.frames) if 'FOOT' in f.name }
 mass = sum( [ y.mass for y in model.inertias ] )
 grav = np.linalg.norm(model.gravity.linear)
 
+### ---------------------------------------------------------------------- ###
 ### ACTION MODEL
 class MX2SX:
     length = .3  # pendulum elongated dimension
@@ -147,7 +148,7 @@ perps = [ np.array(groundNormal(p)).T[0] for p in positions ]
 normals = [ n/np.linalg.norm(n) for n in perps ]
 
 
-### ---------------------------------------------------------- ###
+### ---------------------------------------------------------------------- ###
 ## Visualization
 
 if viz is not None: gv=viz.viewer.gui
