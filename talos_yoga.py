@@ -101,7 +101,7 @@ log = casadi.Function('log', [R, R_ref], [cpin.log3(R.T @ R_ref)])
 
 
 ### ----------------------------------------------------------------------------- ###
-### Optimization
+### OPTIMIZATION PROBLEM
 
 # Defining weights
 parallel_cost = 1e3
@@ -159,6 +159,7 @@ opti.subject_to(opti.bounded(-distance_btw_hands/2, rg_position(qs)[1], 0))
 
 ### ----------------------------------------------------------------------------- ###
 
+### SOLVE
 def call(i):
     qs_tmp = integrate(q0, opti.debug.value(Dqs)).full()
     viz.display(qs_tmp)
@@ -168,12 +169,13 @@ def call(i):
 
 # opti.callback(call)
 
-# Solve the oiptimization problem
-
 opti.solver('ipopt')
 opti.set_initial(Dqs, np.zeros(nDq)) # This is optional since by default it's initialized with zeros
 opti.solve()
 
 print("Final cost is: ", opti.value(cost))
 q_sol = integrate(q0, opti.value(Dqs)).full()
+
+### VISUALIZATION
+
 viz.display(q_sol)
