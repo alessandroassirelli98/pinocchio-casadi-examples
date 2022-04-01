@@ -9,10 +9,9 @@ subject to  q = pin.integrate(q0, Dq)
             f_i X (com_pos - p_i) == 0 # zero angular momentum at the com 
 
             # The friction cone constraint can be one of the following:
-            0)  || f_t ||**2 <= mu * || f_n ||**2   # in this case mu = 1. f_t and f_n are the tangential and orthogonal component of the contact force
+            0)  || f_t ||**2 <= mu * || f_n ||**2   # f_t and f_n are the tangential and orthogonal component of the contact force
             1)  || f @ k.T @ k - k @ k.T @ f ||**2 <= k.T @ f @ f.T @ k @k.T @ k    # k is the vector normal to the ground, while f is the vector of contact force
-            2)  || f.T @ k ||**2 >= (cos(alpha_k))**2 || f ||**2 * || k ||**2   # here alpha_k is the angle of the friction cone, and it's set to 45 degree,
-                                                                                which is equivalent to mu = 1
+            2)  || f.T @ k ||**2 >= (cos(alpha_k))**2 || f ||**2 * || k ||**2   # here alpha_k is the angle of the friction cone, alpha_k = tan^{-1} mu
 
 '''
 
@@ -31,7 +30,9 @@ data = model.createData()
 
 # Either 0, 1 or 2 This is used to choose between the 3 methods 
 # They are equivalent, but the convergence is slower for some of them
-FRICTION_CONE_CONTRAINT_TYPE = 2 
+FRICTION_CONE_CONTRAINT_TYPE = 1 
+mu = 0.8
+alpha_k = casadi.atan(mu)
 
 try:
     viz = pin.visualize.GepettoVisualizer(robot.model,robot.collision_model,robot.visual_model)
@@ -70,7 +71,6 @@ grav = np.linalg.norm(model.gravity.linear)
 ### ---------------------------------------------------------------------- ###
 ### ACTION MODEL
 class MX2SX:
-    length = .3  # pendulum elongated dimension
     def __init__(self,model):
         self.cmodel = cmodel = cpin.Model(model)
         self.cdata = cdata = cmodel.createData()
@@ -114,14 +114,15 @@ for idx,force in zip(mx2sx.feet.keys(),fs):
             normal = perp/ casadi.norm_2(perp) 
             fn = force.T@normal
             ft = force - fn*normal
-            opti.subject_to(  ft.T@ft <= fn.T@fn  )
+            opti.subject_to(  ft.T@ft <= casadi.power(mu, 2)  * fn.T@fn  )
 
     elif (FRICTION_CONE_CONTRAINT_TYPE == 1):
         fp = (force@perp.T@perp- perp@perp.T@force)
-        opti.subject_to( fp.T@fp <=  (perp.T@force@force.T@perp@perp.T@perp))
+        opti.subject_to( fp.T@fp <=  casadi.power(mu, 2) * (perp.T@force@force.T@perp@perp.T@perp))
 
     elif (FRICTION_CONE_CONTRAINT_TYPE == 2):
-        opti.subject_to( (force.T@perp)@perp.T@force >= 1/2 * (force.T@force) * (perp.T@perp)) 
+        opti.subject_to( (force.T@perp)@perp.T@force >= 
+                        casadi.power(casadi.cos(alpha_k), 2) * (force.T@force) * (perp.T@perp)) 
     else:
         raise ValueError("Please select a valid type of friction constraint")
 
