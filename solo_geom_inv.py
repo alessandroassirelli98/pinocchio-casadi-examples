@@ -8,6 +8,12 @@ subject to  q = pin.integrate(q0, Dq)
             com_z >= avg(p_z) # com height higher than the average height of the feet
             f_i X (com_pos - p_i) == 0 # zero angular momentum at the com 
 
+            # The friction cone constraint can be one of the following:
+            0)  || f_t ||**2 <= mu * || f_n ||**2   # in this case mu = 1. f_t and f_n are the tangential and orthogonal component of the contact force
+            1)  || f @ k.T @ k - k @ k.T @ f ||**2 <= k.T @ f @ f.T @ k @k.T @ k    # k is the vector normal to the ground, while f is the vector of contact force
+            2)  || f.T @ k ||**2 >= (cos(alpha_k))**2 || f ||**2 * || k ||**2   # here alpha_k is the angle of the friction cone, and it's set to 45 degree,
+                                                                                which is equivalent to mu = 1
+
 '''
 
 import matplotlib
@@ -16,10 +22,7 @@ from pinocchio import casadi as cpin
 import casadi
 import numpy as np
 import example_robot_data as robex 
-import matplotlib.pyplot as plt
 from pinocchio.visualize import GepettoVisualizer
-
-plt.style.use('seaborn')
 
 ### LOAD AND DISPLAY PENDULUM
 robot = robex.load('solo12')
@@ -28,8 +31,7 @@ data = model.createData()
 
 # Either 0, 1 or 2 This is used to choose between the 3 methods 
 # They are equivalent, but the convergence is slower for some of them
-# By looking at the friction-constraint-comparison.ipynb notebook method 1 is the best in this case
-FRICTION_CONE_CONTRAINT_TYPE = 0 
+FRICTION_CONE_CONTRAINT_TYPE = 2 
 
 try:
     viz = pin.visualize.GepettoVisualizer(robot.model,robot.collision_model,robot.visual_model)
@@ -41,12 +43,7 @@ except:
 
 
 def ground(xy):
-    '''Ground altitude as a function of x-y position'''
-    #return (xy[0]/5+xy[1]/8) * 0 # Flat terrain
-    #return (xy[0]/5+xy[1]/8)
-    #return xy[0]/1+xy[1]/1
     return (np.sin(xy[0]*3)/5 + np.cos(xy[1]**2*3)/20 + np.sin(xy[1]*xy[0]*5)/10)
-    #return xy[0]**2/10 - xy[1]**2/20 + xy[0]*xy[1]/15 + .3*xy[0] + .15*xy[1]
 
 def vizGround(viz,elevation,space,name='ground',color=[1,1,1,1]):
     space = 1e-1
@@ -114,17 +111,16 @@ for idx,force in zip(mx2sx.feet.keys(),fs):
 
     if (FRICTION_CONE_CONTRAINT_TYPE == 0):
             normal = perp/ casadi.norm_2(perp) 
-            fn = force.T@normal # This one is the magnitude of the normal component
-            ft = force - fn*normal # The force vector - the vector of the normal force
-            opti.subject_to(  ft.T@ft <= fn.T@fn  )   # force in friction cone (classic method)
+            fn = force.T@normal
+            ft = force - fn*normal
+            opti.subject_to(  ft.T@ft <= fn.T@fn  )
 
     elif (FRICTION_CONE_CONTRAINT_TYPE == 1):
-        #fp = (force@perp.T@perp- force.T @ perp@perp) # Should be equivalen
         fp = (force@perp.T@perp- perp@perp.T@force)
         opti.subject_to( fp.T@fp <=  (perp.T@force@force.T@perp@perp.T@perp))
 
     elif (FRICTION_CONE_CONTRAINT_TYPE == 2):
-        opti.subject_to( (force.T@perp)@perp.T@force >= 1/2 * (force.T@force)@(perp.T@perp)) 
+        opti.subject_to( (force.T@perp)@perp.T@force >= 1/2 * (force.T@force) * (perp.T@perp)) 
     else:
         raise ValueError("Please select a valid type of friction constraint")
 
@@ -133,9 +129,8 @@ for idx,force in zip(mx2sx.feet.keys(),fs):
 opti.subject_to( sum(fs) == np.array([ 0,0,mass*grav ]))  # Sum of forces is weight
 opti.subject_to( torque == 0 )  # Sum of torques around COM is 0
 totalcost += sum( [ f.T@f for f in fs ] )/10 # Add penalty on forces
-
-# Center of mass above the feet
-opti.subject_to( mx2sx.com(q)[2] >= (sum([ f(q)[2] for f in mx2sx.feet.values() ]))/len(feet))
+opti.subject_to( mx2sx.com(q)[2] >= 
+                (sum([ f(q)[2] for f in mx2sx.feet.values() ]))/len(feet))  # Center of mass above the feet
 
 ### SOLVE
 opti.minimize(totalcost)
@@ -150,7 +145,11 @@ except:
 positions = [ np.array( p(qopt) ).T[0] for p in mx2sx.feet.values() ]
 perps = [ np.array(groundNormal(p)).T[0] for p in positions ]  
 normals = [ n/np.linalg.norm(n) for n in perps ]
-    
+
+
+### ---------------------------------------------------------- ###
+## Visualization
+
 if viz is not None: gv=viz.viewer.gui
 for idx,force in zip(mx2sx.feet.keys(),fs_opt):
     #opti.subject_to( f[:2].T@f[:2] <= f[2]**2 )
