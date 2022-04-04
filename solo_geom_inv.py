@@ -26,7 +26,9 @@ from pinocchio.visualize import GepettoVisualizer
 ### LOAD AND DISPLAY SOLO12
 robot = robex.load('solo12')
 model = robot.model
+cmodel = cpin.Model(model)
 data = model.createData()
+cdata = cmodel.createData()
 
 # Either 0, 1 or 2 This is used to choose between the 3 methods 
 # They are equivalent, but the convergence is slower for some of them
@@ -69,45 +71,36 @@ mass = sum( [ y.mass for y in model.inertias ] )
 grav = np.linalg.norm(model.gravity.linear)
 
 ### ---------------------------------------------------------------------- ###
-### ACTION MODEL
-class MX2SX:
-    def __init__(self,model):
-        self.cmodel = cmodel = cpin.Model(model)
-        self.cdata = cdata = cmodel.createData()
 
-        cq = casadi.SX.sym("q",model.nq,1)
-        cdq = casadi.SX.sym("dq",model.nv,1)
+cq = casadi.SX.sym("q",model.nq,1)
+cdq = casadi.SX.sym("dq",model.nv,1)
 
-        cpin.framesForwardKinematics(self.cmodel,self.cdata,cq)
-        self.feet = \
-            { idx: casadi.Function(f'{name}_pos', [cq], [cdata.oMf[idx].translation])  for idx,name in feet.items() }
-
-        self.com = casadi.Function('com',[cq],[cpin.centerOfMass(cmodel,cdata,cq)])
-
-        self.integrate = casadi.Function('integrate',[ cq,cdq ],[cpin.integrate(cmodel,cq,cdq) ])
+cpin.framesForwardKinematics(cmodel,cdata,cq)
+feet = { idx: casadi.Function(f'{name}_pos', [cq],\
+        [cdata.oMf[idx].translation])  for idx,name in feet.items() }
+com = casadi.Function('com',[cq],[cpin.centerOfMass(cmodel,cdata,cq)])
+integrate = casadi.Function('integrate',[ cq,cdq ],[cpin.integrate(cmodel,cq,cdq) ])
 
 ### PROBLEM
 opti = casadi.Opti()
-mx2sx = MX2SX(model)
 
 # Decision variables
 # Note that the contact forces are optimization variables
 dq = opti.variable(model.nv)
-q = mx2sx.integrate(robot.q0,dq)
+q = integrate(robot.q0,dq)
 fs = [ opti.variable(3) for _ in feet.values() ]
 
 # constraint the com_xy position
-opti.subject_to(mx2sx.com(q)[:2] == np.array([.1,.2]))
+opti.subject_to(com(q)[:2] == np.array([.1,.2]))
 rq = q[7:]-robot.q0[7:]
 totalcost = rq.T@rq
 
-for f in mx2sx.feet.values():
+for f in feet.values():
     opti.subject_to( f(q)[2] == ground(f(q)[:2]) )  ### Foot in contact with the ground
 
 torque = 0
-com = mx2sx.com(q)
-for idx,force in zip(mx2sx.feet.keys(),fs):
-    pos = mx2sx.feet[idx](q)
+for idx,force in zip(feet.keys(),fs):
+    pos = feet[idx](q)
     perp = groundNormal(pos)
 
     if (FRICTION_CONE_CONTRAINT_TYPE == 0):
@@ -126,13 +119,13 @@ for idx,force in zip(mx2sx.feet.keys(),fs):
     else:
         raise ValueError("Please select a valid type of friction constraint")
 
-    torque += casadi.cross(force,pos-com)
+    torque += casadi.cross(force,pos-com(q))
     
 opti.subject_to( sum(fs) == np.array([ 0,0,mass*grav ]))  # Sum of forces is weight
 opti.subject_to( torque == 0 )  # Sum of torques around COM is 0
 totalcost += sum( [ f.T@f for f in fs ] )/10 # Add penalty on forces
-opti.subject_to( mx2sx.com(q)[2] >= 
-                (sum([ f(q)[2] for f in mx2sx.feet.values() ]))/len(feet))  # Center of mass above the feet
+opti.subject_to( com(q)[2] >= 
+                (sum([ f(q)[2] for f in feet.values() ]))/len(feet))  # Center of mass above the feet
 
 ### SOLVE
 opti.minimize(totalcost)
@@ -144,7 +137,7 @@ try:
     fs_opt = [ opti.value(f) for f in fs ]
 except:
     fs_opt = [ np.zeros(3) for _ in feet ]
-positions = [ np.array( p(qopt) ).T[0] for p in mx2sx.feet.values() ]
+positions = [ np.array( p(qopt) ).T[0] for p in feet.values() ]
 perps = [ np.array(groundNormal(p)).T[0] for p in positions ]  
 normals = [ n/np.linalg.norm(n) for n in perps ]
 
@@ -153,9 +146,9 @@ normals = [ n/np.linalg.norm(n) for n in perps ]
 ## Visualization
 
 if viz is not None: gv=viz.viewer.gui
-for idx,force in zip(mx2sx.feet.keys(),fs_opt):
+for idx,force in zip(feet.keys(),fs_opt):
     #opti.subject_to( f[:2].T@f[:2] <= f[2]**2 )
-    pos = np.array(mx2sx.feet[idx](qopt))
+    pos = np.array(feet[idx](qopt))
     perp = np.array(groundNormal(pos))
     print(perp.T)
     normal = perp/(perp.T@perp)
