@@ -322,10 +322,6 @@ for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fs_sol,xs_
         #assert( sum(vf.linear**2) < 1e-8 )
         af = pin.getFrameClassicalAcceleration(model,data,idf,pin.LOCAL_WORLD_ALIGNED)
         assert( sum(af.linear**2) < 1e-8 )
-        
-
-    # for idf in m.contactIds:
-    #     assert( abs(data.oMf[idf].translation[2] )<1e-6 )
 
 
 # Gather forces in world frame
@@ -350,11 +346,6 @@ plt.title('cost')
 plt.plot(cost_log)
 plt.draw()
 
-""" for i in range(3):
-    plt.subplot(3,1,i+1)
-    plt.plot(fs_world[:,i::3])
-plt.draw() """
-
 legend = ['x', 'y', 'z']
 plt.figure()
 for i in range(3):
@@ -371,4 +362,5 @@ np.save(open("/tmp/sol.npy", "wb"),
             "xs": xs_sol,
             "us": us_sol,
             "acs": acs_sol,
-            "fs": np.array(fs_sol0)})
+            "fs": np.array(fs_sol0)
+        })
