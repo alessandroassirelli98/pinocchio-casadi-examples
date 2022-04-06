@@ -21,13 +21,17 @@ from pinocchio import casadi as cpin
 import casadi
 import numpy as np
 import example_robot_data as robex
-#import matplotlib.pyplot as plt; plt.ion()
+import matplotlib.pyplot as plt
 from pinocchio.visualize import GepettoVisualizer
+from time import time
+                        
+
+
+plt.style.use('seaborn')
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
-T = 10
-DT = 0.05
+DT = 0.015
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -43,17 +47,27 @@ except:
 model = robot.model
 cmodel = cpin.Model(robot.model)
 data = model.createData()
+viz.display(robot.q0)
 
 # Initial config, also used for warm start
 x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
 # quasi static for x0, used for warm-start and regularization
-u0 = np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
+u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
                0.25720939, -0.51441314])  ### quasi-static for x0
 
+contactIds = [ i for i,f in enumerate(cmodel.frames) if "FOOT" in f.name ]
+contact_names = { i:f.name for i,f in enumerate(cmodel.frames) if "FOOT" in f.name }
 contact_frames = { i:f for i,f in enumerate(cmodel.frames) if "FOOT" in f.name }
 contact_models = [ cpin.RigidConstraintModel(cpin.ContactType.CONTACT_3D,cmodel,frame.parentJoint,frame.placement)
                     for frame in contact_frames.values() ]
+baseId = model.getFrameId('base_link')
+contact_models_dict = { str(idx) : contact_models[i] for i,idx in enumerate(contactIds) }
+key_list = list(contact_models_dict.keys())
+val_list = list(contact_models_dict.values())
+
+baseId = model.getFrameId('base_link')
+
 prox_settings = cpin.ProximalSettings(0,1e-9,1)
 for c in contact_models:
     c.corrector.Kd=.00  
@@ -65,9 +79,11 @@ for c in contact_models:
 # The cost is a sole regularization of u**2
 class CasadiActionModel:
     dt = DT
-    def __init__(self,cmodel,contact_models,prox_settings):
+    def __init__(self,cmodel,contactIds,prox_settings):
 
+        self.contactIds = contactIds
         self.cmodel = cmodel
+        self.contact_models = []
         self.cdata = cdata = cmodel.createData()
         nq,nv = cmodel.nq,cmodel.nv
         self.nx = nq+nv
@@ -75,11 +91,12 @@ class CasadiActionModel:
         self.nu = nv-6
         self.ntau = nv
 
-        self.contact_models = contact_models
         self.prox_settings = prox_settings
-        self.contact_datas = [ m.createData() for m in contact_models ]
-        cpin.initConstraintDynamics(cmodel,cdata,contact_models)
+        [self.contact_models.append(contact_models_dict[str(idx)] ) for idx in contactIds]
+        self.contact_datas = [ m.createData() for m in self.contact_models ]
+        reference_frame = cpin.ReferenceFrame.LOCAL_WORLD_ALIGNED
 
+        cpin.initConstraintDynamics(cmodel,cdata, self.contact_models)
         cx = casadi.SX.sym("x",self.nx,1)
         cq = casadi.SX.sym("q",cmodel.nq,1)
         cv = casadi.SX.sym("v",cmodel.nv,1)
@@ -88,6 +105,7 @@ class CasadiActionModel:
         ctau = casadi.SX.sym("tau",self.ntau,1)
         cdx = casadi.SX.sym("dx",self.ndx,1)
         
+        cpin.framesForwardKinematics(cmodel, cdata, cx[: nq])
         acc = cpin.constraintDynamics(cmodel,cdata,cx[:nq],cx[nq:],ctau,
                                       self.contact_models,self.contact_datas,self.prox_settings)
 
@@ -98,6 +116,12 @@ class CasadiActionModel:
         self.xdot = casadi.Function('xdot', [cx,ctau], [ casadi.vertcat(cx[nq:],acc) ])
         # com(x) = cpin.centerOfMass(q)
         self.com = casadi.Function('com', [cx],[ cpin.centerOfMass(cmodel,cdata,cx[:nq]) ])
+
+        self.base_translation = casadi.Function('base_translation', [cx], [ cdata.oMf[baseId].translation ])
+
+        self.feet = [ casadi.Function('foot'+cmodel.frames[idf].name,
+                                      [cx],[self.cdata.oMf[idf].translation]) for idf in contactIds ]
+
         # integrate(x,dx)
         self.integrate = casadi.Function('plus', [cx,cdx],
                                         [ casadi.vertcat(cpin.integrate(self.cmodel,cx[:nq],cdx[:nv]),
@@ -122,24 +146,43 @@ class CasadiActionModel:
         nq,nv = self.cmodel.nq,self.cmodel.nv
         tau = casadi.vertcat( np.zeros(6), u )
 
-        # Euler integration
-        vnext = x[nq:] + self.acc(x,tau)*dt
-        qnext = self.integrate_q(x[:nq], vnext*dt)
+        vnext = x[nq:] + self.acc(x,tau)*dt # This is the velocity at the next timestep (Euler integration)
+        qnext = self.integrate_q(x[:nq], vnext*dt)  # This is the joint position at the next timestep
+                                                    # Note that here the integration has been done with 
+                                                    # pin.integrate(actual joint conf, displacement of joint)
         xnext = casadi.vertcat(qnext,vnext)
         
         cost = 0
         cost += 1e-2*casadi.sumsqr(u-u0) * self.dt
         cost += 1e-1*casadi.sumsqr( self.difference(x,x0) ) * self.dt
+        cost += 1e3 * casadi.sumsqr(x[3:6]) # Keep base flat
         #cost += sum( [ casadi.sumsqr(f(x,tau)**2) for f in self.forces ] )
 
         return xnext,cost
     
+
+# [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
+contactPattern = [] \
+    + [ [ 1,1,1,1 ] ] * 10 \
+    + [ [ 1,1,1,1 ] ] * 0  \
+    + [ [ 1,1,1,1 ] ] * 0 \
+    + [ [ 1,1,1,1 ] ] 
+T = len(contactPattern)-1
+    
+def patternToId(pattern):
+    return tuple( contactIds[i] for i,c in enumerate(pattern) if c==1 )
+
 ### PROBLEM
+opt_start_time  = time() 
 opti = casadi.Opti()
+
+contactSequence = [ patternToId(p) for p in contactPattern ]
+casadiActionModels = { contacts: CasadiActionModel(cmodel,contacts, prox_settings=prox_settings)  for contacts in set(contactSequence) }
+
 # The control models are stored as a collection of shooting nodes called running models,
 # with an additional terminal model.
-runningModels = [ CasadiActionModel(cmodel,contact_models,prox_settings) for t in range(T) ]
-terminalModel = CasadiActionModel(cmodel,contact_models,prox_settings)
+runningModels = [ casadiActionModels[contactSequence[t]] for t in range(T) ]
+terminalModel =  casadiActionModels[contactSequence[T]]
 
 # Decision variables
 dxs = [ opti.variable(model.ndx) for model in runningModels+[terminalModel] ]     # state variable
@@ -148,17 +191,16 @@ xs = [ m.integrate(x0,dx) for m,dx in zip(runningModels+[terminalModel],dxs) ]
 
 # Roll out loop, summing the integral cost and defining the shooting constraints.
 totalcost = 0
-opti.subject_to(dxs[0] == np.zeros(2*cmodel.nv))
+opti.subject_to(dxs[0] == 0)
 for t in range(T):
-    
     xnext,rcost = runningModels[t].calc(xs[t], us[t])
     #opti.subject_to( xs[t + 1] == xnext )
     opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
     totalcost += rcost
 
-#opti.subject_to( xs[1][cmodel.nq:] == 0 )
-opti.subject_to( xs[T][cmodel.nq:] == 0 )              # v_T = 0
-opti.subject_to( terminalModel.com(xs[T])[2] == .1 )   # z_com(T) = ref
+opti.subject_to( xs[T][cmodel.nq:] == 0 )  # v_T = 0
+opti.subject_to( xs[T][3:6] == 0 ) # Base flat
+opti.subject_to( terminalModel.base_translation(xs[T])[2] == .1 ) # Base at target height
 
 
 ### SOLVE
@@ -168,7 +210,6 @@ for u in us: opti.set_initial(u,u0)
 
 try:
     ### Warm start
-    
     guesses = np.load("/tmp/sol.npy",allow_pickle=True).item()
     xs_g = guesses['xs']
     us_g = guesses['us']
@@ -182,25 +223,33 @@ try:
 
     for x,xg in zip(dxs,xs_g): opti.set_initial(x, xdiff(x0,xg))
     for u,ug in zip(us,us_g): opti.set_initial(u,ug)
+    
 except:
     print( 'No warm start' )
 
 
+cost_log = []
+def call(i):
+    global cost_log
+    cost_log += [opti.debug.value(totalcost)]
 
+opti.callback(call)
 opti.solver("ipopt") # set numerical backend
 # Caution: in case the solver does not converge, we are picking the candidate values
 # at the last iteration in opti.debug, and they are NO guarantee of what they mean.
 try:
-    sol = opti.solve_limited()
+    sol = opti.solve()
     dxs_sol = np.array([ opti.value(x) for x in dxs ])
     xs_sol = np.array([ opti.value(x) for x in xs ])
+    q_sol = xs_sol[:, :robot.nq]
+    v_sol = xs_sol[:, robot.nq :]
     us_sol = np.array([ opti.value(u) for u in us ])
 except:
     print('ERROR in convergence, plotting debug info.')
     xs_sol = np.array([ opti.debug.value(x) for x in xs ])
     us_sol = np.array([ opti.debug.value(u) for u in us ])
 
-
+print("TOTAL OPTIMIZATION TIME: ", time() - opt_start_time)
 ### CHECK
 ### CHECK
 ### CHECK
@@ -218,10 +267,6 @@ nq,nv = model.nq,model.nv
 
 hiter = []
 
-xs_sol = xs_g
-us_sol = us_g
-
-
 # Check that all constraints are respected
 for t,(m,x1,u,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,xs_sol[1:])):
     tau = np.concatenate([np.zeros(6),u])
@@ -232,4 +277,63 @@ for t,(m,x1,u,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,xs_sol[1:]))
     xnext = np.concatenate([qnext,vnext])
     assert( np.linalg.norm(xnext-x2) < 1e-6 )
     #assert( prox_settings.iter<=2 )
-    hiter.append(prox_settings.iter)
+    hiter.append(prox_settings.iter) 
+
+
+# Plot feet positions
+plt.figure(figsize=(12, 6), dpi = 90)
+foot_position = { f : [] for f in contactIds}
+for f in foot_position:
+    for q in q_sol:
+        pin.framesForwardKinematics(model, data, q)
+        foot_position[f] += [data.oMf[f].translation] 
+for i in foot_position:
+    foot_position[i] = np.array(foot_position[i])
+
+for i, f in enumerate(foot_position):
+    plt.subplot(2,2,i+1)
+    plt.title(contact_names[f])
+    plt.plot(foot_position[f])
+    plt.legend(['x', 'y', 'z'])
+
+
+plt.figure(figsize=(12, 6), dpi = 90)
+plt.subplot(1,2,1)
+plt.title('Residuals')
+plt.semilogy(opti.stats()['iterations']['inf_du'])
+plt.semilogy(opti.stats()['iterations']['inf_pr'])
+plt.legend(['dual', 'primal'])
+
+plt.subplot(1,2,2)
+plt.title('cost')
+plt.plot(cost_log)
+
+viz.play(q_sol.T, terminalModel.dt)
+
+plt.figure(figsize=(12, 6), dpi = 90)
+
+legend = []
+plt.subplot(1,2,1)
+for i in range(q_sol.shape[1]):
+    legend.append('q_' + str (i))
+    plt.plot(q_sol[:,i])
+plt.legend(legend)
+plt.xlabel('t [s]')
+plt.ylabel('[rad]')
+plt.title('Positions')
+
+legend = []
+plt.subplot(1,2,2)
+for i in range(v_sol.shape[1]):
+    legend.append('v_' + str (i))
+    plt.plot(q_sol[:,i])
+plt.legend(legend)
+plt.xlabel('t [s]')
+plt.ylabel('[rad/s]')
+plt.title('Velocities')
+
+"""
+for i in range(12):
+    plt.subplot(4,3, i+1)
+    plt.plot(us_sol[:, i])
+"""
