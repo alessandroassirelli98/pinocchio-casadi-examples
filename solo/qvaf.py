@@ -3,14 +3,15 @@ OCP with constrained dynamics
 
 Simple example with regularization cost and terminal com+velocity constraint, known initial config.
 
-min X,U,A,F    sum_t  ||u_t-u0||**2  + || diff(x_t,x0) ||**2
+min X,U,A,F    sum_t  ||u_t-u0||**2  + || diff(x_t,x0) ||**2 + || orientation(base(x_t)) ||**2
 s.t
         x_0 = x0
         x_t+1  = EULER(x_t,u_t,f_t |  f=a_t )
         a_t = aba(q_t,v_t,u_t)
-        a_feet(t) = J a = 0
+        a_feet(t) = 0
         v_T = x_T [nq:]  = 0
         com(q_t)[2] = com(x_T[:nq])[2] = 0.1
+        orientation(base(x_T)) == 0
 
 So the robot should just bend to reach altitude COM 10cm while stoping at the end of the movement.
 The acceleration is introduced as an explicit (slack) variable to simplify the formation of the contact constraint.
@@ -29,7 +30,6 @@ plt.style.use('seaborn')
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
-T = 10
 DT = 0.025
 z_target = .1
 
@@ -59,7 +59,6 @@ u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
 
 contactIds = [ i for i,f in enumerate(cmodel.frames) if "FOOT" in f.name ]
 baseId = model.getFrameId('base_link')
-all_contacts = contactIds
 pin.framesForwardKinematics(model,data,x0[:model.nq])
 robotweight = -sum([Y.mass for Y in model.inertias]) * model.gravity.linear[2]
 footRadius = np.mean([ data.oMf[c].translation[2] for c in contactIds ])
@@ -184,13 +183,9 @@ class CasadiActionModel:
         for afoot in self.afeet:
             ocp.subject_to( afoot(x,a) == 0 )
 
-        for f,R in zip(fs,self.Rfeet):   # for cone constrains
+        for f,R in zip(fs,self.Rfeet):   # for cone constrains (flat terrain)
             fw = R(x) @ f
             ocp.subject_to(fw[2]>=0)
-
-
-        #R0 = np.eye(3)
-        #cost += cpin.log3( self.Rfeet[0](x) @ R0 )
             
         return xnext,cost
 
@@ -231,12 +226,11 @@ xs =  [ m.integrate(x0,dx) for m,dx in zip(runningModels+[terminalModel],dxs) ]
 # Roll out loop, summing the integral cost and defining the shooting constraints.
 totalcost = 0
 opti.subject_to(dxs[0] == 0)
-# for foot in runningModels[0].feet:
-#     opti.subject_to(foot(xs[0])[2]==0)
+
 for t in range(T):
     
     xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti )
-    opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == 0 ) # np.zeros(2*cmodel.nv) )  # x' = f(x,u)
+    opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == 0 ) # x' = f(x,u)
 
     totalcost += rcost
 
@@ -246,19 +240,21 @@ for t in range(T):
             opti.subject_to( runningModels[t].feet[i](xs[t])[2] == footRadius )
     
         
-opti.subject_to( xs[T][cmodel.nq:] == 0 )              # v_T = 0
-#opti.subject_to( xs[T][:3] == x0[:3] )              # x_T,y_T,z_T = x0,y0,z0
-#opti.subject_to( terminalModel.com(xs[T])[2] == .1 )   # z_com(T) = ref
-#totalcost += 1000 * (terminalModel.com(xs[T])[2] - .1)**2
-#totalcost += 1 * (terminalModel.com(xs[T//2])[2] - .3)**2
-opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target )   # z_com(T) = ref
-opti.subject_to( xs[T][3:6] == 0 )   # Base flat
+opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
+opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target ) # z_com(T) = ref
+opti.subject_to( xs[T][3:6] == 0 ) # Base flat
 
 ### SOLVE
 opti.minimize(totalcost)
-""" for x in dxs: opti.set_initial(x,np.zeros(terminalModel.ndx))
-for u in us: opti.set_initial(u,u0) """
 opti.solver("ipopt") # set numerical backend
+
+cost_log = []
+def call(i):
+    global cost_log
+    cost_log += [opti.debug.value(totalcost)]
+
+opti.callback(call)
+
 # Caution: in case the solver does not converge, we are picking the candidate values
 # at the last iteration in opti.debug, and they are NO guarantee of what they mean.
 try:
@@ -338,7 +334,10 @@ for t,m in enumerate(runningModels):
     pin.framesForwardKinematics(model, data, xs_sol[t, :nq])
     fs_world.append( np.concatenate([  data.oMf[idf].rotation @ fs_sol0[t][3*i:3*i+3] for i,idf in enumerate(contactIds) ]) )
 fs_world = np.array(fs_world)
-    
+
+
+### ------------------------------------------------------------------- ###
+# PLOT
 
 plt.figure(figsize=(12, 6), dpi = 90)
 plt.subplot(1,2,1)
@@ -346,16 +345,21 @@ plt.title('Residuals')
 plt.semilogy(opti.stats()['iterations']['inf_du'])
 plt.semilogy(opti.stats()['iterations']['inf_pr'])
 plt.legend(['dual', 'primal'])
+plt.subplot(1,2,2)
+plt.title('cost')
+plt.plot(cost_log)
 plt.draw()
 
-for i in range(3):
+""" for i in range(3):
     plt.subplot(3,1,i+1)
     plt.plot(fs_world[:,i::3])
-plt.draw()
+plt.draw() """
 
+legend = ['x', 'y', 'z']
 plt.figure()
 for i in range(3):
     plt.subplot(3,1,i+1)
+    plt.title('Base link position_' + legend[i])
     plt.plot(base_log[:, i])
     if i == 2:
         plt.axhline(y = z_target, color = 'black', linestyle = '--')
