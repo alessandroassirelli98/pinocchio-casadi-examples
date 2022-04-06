@@ -3,12 +3,13 @@ OCP with constrained dynamics
 
 Simple example with regularization cost and terminal com+velocity constraint, known initial config.
 
-min X,U    sum_t  ||u_t-u0||**2  + || diff(x_t,x0) ||**2
+min X,U    sum_t  ||u_t-u0||**2  + || diff(x_t,x0) ||**2 + || orientation(base(x_t)) ||**2
 s.t
         x_0 = x0
         x_t+1  = EULER(x_t,u_t |  f=pin.constraintDynamics with 4 feet in contact )
         v_T = x_T [nq:]  = 0
         com(q_t)[2] = com(x_T[:nq])[2] = 0.1
+        orientation(base(x_T)) == 0
 
 So the robot should just bend to reach altitude COM 10cm while stoping at the end of the movement.
 
@@ -32,6 +33,7 @@ plt.style.use('seaborn')
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
 DT = 0.015
+z_target = 0.13
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -57,16 +59,11 @@ u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
                0.25720939, -0.51441314])  ### quasi-static for x0
 
 contactIds = [ i for i,f in enumerate(cmodel.frames) if "FOOT" in f.name ]
-contact_names = { i:f.name for i,f in enumerate(cmodel.frames) if "FOOT" in f.name }
 contact_frames = { i:f for i,f in enumerate(cmodel.frames) if "FOOT" in f.name }
 contact_models = [ cpin.RigidConstraintModel(cpin.ContactType.CONTACT_3D,cmodel,frame.parentJoint,frame.placement)
                     for frame in contact_frames.values() ]
 baseId = model.getFrameId('base_link')
 contact_models_dict = { str(idx) : contact_models[i] for i,idx in enumerate(contactIds) }
-key_list = list(contact_models_dict.keys())
-val_list = list(contact_models_dict.values())
-
-baseId = model.getFrameId('base_link')
 
 prox_settings = cpin.ProximalSettings(0,1e-9,1)
 for c in contact_models:
@@ -116,7 +113,7 @@ class CasadiActionModel:
         self.xdot = casadi.Function('xdot', [cx,ctau], [ casadi.vertcat(cx[nq:],acc) ])
         # com(x) = cpin.centerOfMass(q)
         self.com = casadi.Function('com', [cx],[ cpin.centerOfMass(cmodel,cdata,cx[:nq]) ])
-
+        # Base link position
         self.base_translation = casadi.Function('base_translation', [cx], [ cdata.oMf[baseId].translation ])
 
         self.feet = [ casadi.Function('foot'+cmodel.frames[idf].name,
@@ -156,7 +153,6 @@ class CasadiActionModel:
         cost += 1e-2*casadi.sumsqr(u-u0) * self.dt
         cost += 1e-1*casadi.sumsqr( self.difference(x,x0) ) * self.dt
         cost += 1e3 * casadi.sumsqr(x[3:6]) # Keep base flat
-        #cost += sum( [ casadi.sumsqr(f(x,tau)**2) for f in self.forces ] )
 
         return xnext,cost
     
@@ -194,13 +190,12 @@ totalcost = 0
 opti.subject_to(dxs[0] == 0)
 for t in range(T):
     xnext,rcost = runningModels[t].calc(xs[t], us[t])
-    #opti.subject_to( xs[t + 1] == xnext )
     opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
     totalcost += rcost
 
 opti.subject_to( xs[T][cmodel.nq:] == 0 )  # v_T = 0
 opti.subject_to( xs[T][3:6] == 0 ) # Base flat
-opti.subject_to( terminalModel.base_translation(xs[T])[2] == .1 ) # Base at target height
+opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target ) # Base at target height
 
 
 ### SOLVE
@@ -235,6 +230,7 @@ def call(i):
 
 opti.callback(call)
 opti.solver("ipopt") # set numerical backend
+
 # Caution: in case the solver does not converge, we are picking the candidate values
 # at the last iteration in opti.debug, and they are NO guarantee of what they mean.
 try:
@@ -244,6 +240,9 @@ try:
     q_sol = xs_sol[:, :robot.nq]
     v_sol = xs_sol[:, robot.nq :]
     us_sol = np.array([ opti.value(u) for u in us ])
+    base_log = []
+    [base_log.append(terminalModel.base_translation(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
+    base_log = np.array(base_log)
 except:
     print('ERROR in convergence, plotting debug info.')
     xs_sol = np.array([ opti.debug.value(x) for x in xs ])
@@ -280,22 +279,8 @@ for t,(m,x1,u,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,xs_sol[1:]))
     hiter.append(prox_settings.iter) 
 
 
-# Plot feet positions
-plt.figure(figsize=(12, 6), dpi = 90)
-foot_position = { f : [] for f in contactIds}
-for f in foot_position:
-    for q in q_sol:
-        pin.framesForwardKinematics(model, data, q)
-        foot_position[f] += [data.oMf[f].translation] 
-for i in foot_position:
-    foot_position[i] = np.array(foot_position[i])
-
-for i, f in enumerate(foot_position):
-    plt.subplot(2,2,i+1)
-    plt.title(contact_names[f])
-    plt.plot(foot_position[f])
-    plt.legend(['x', 'y', 'z'])
-
+### ------------------------------------------------ ###
+# PLOT
 
 plt.figure(figsize=(12, 6), dpi = 90)
 plt.subplot(1,2,1)
@@ -303,37 +288,20 @@ plt.title('Residuals')
 plt.semilogy(opti.stats()['iterations']['inf_du'])
 plt.semilogy(opti.stats()['iterations']['inf_pr'])
 plt.legend(['dual', 'primal'])
-
 plt.subplot(1,2,2)
 plt.title('cost')
 plt.plot(cost_log)
+plt.draw()
 
 viz.play(q_sol.T, terminalModel.dt)
 
-plt.figure(figsize=(12, 6), dpi = 90)
+legend = ['x', 'y', 'z']
+plt.figure()
+for i in range(3):
+    plt.subplot(3,1,i+1)
+    plt.title('Base link position_' + legend[i])
+    plt.plot(base_log[:, i])
+    if i == 2:
+        plt.axhline(y = z_target, color = 'black', linestyle = '--')
 
-legend = []
-plt.subplot(1,2,1)
-for i in range(q_sol.shape[1]):
-    legend.append('q_' + str (i))
-    plt.plot(q_sol[:,i])
-plt.legend(legend)
-plt.xlabel('t [s]')
-plt.ylabel('[rad]')
-plt.title('Positions')
-
-legend = []
-plt.subplot(1,2,2)
-for i in range(v_sol.shape[1]):
-    legend.append('v_' + str (i))
-    plt.plot(q_sol[:,i])
-plt.legend(legend)
-plt.xlabel('t [s]')
-plt.ylabel('[rad/s]')
-plt.title('Velocities')
-
-"""
-for i in range(12):
-    plt.subplot(4,3, i+1)
-    plt.plot(us_sol[:, i])
-"""
+plt.show()
