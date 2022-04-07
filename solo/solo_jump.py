@@ -214,20 +214,11 @@ opti.subject_to(dxs[0] == 0)
 for t in range(T):
     print(contactPattern[t])
 
-    """ if (t == preload_steps): # If in the mid of the jump phase
-        xnext,rcost = runningModels[t].calc(xs[t], us[t], opti, start_jump=True)
-        print('Jump')
-        elif (t == preload_steps + in_air_steps): # If in the mid of the jump phase
-        xnext,rcost = runningModels[t].calc(xs[t], us[t], opti)
-        for foot in terminalModel.feet:
-            opti.subject_to(foot(xs[t])[2] == foot(x0)[2] )
-        for vfoot in terminalModel.vfeet:
-            opti.subject_to(vfoot(xs[t]) == 0 )
-        print('Landing') """
     if (t == preload_steps + int(in_air_steps/2) -1): # If in the mid of the jump phase
         xnext,rcost = runningModels[t].calc(xs[t], us[t], opti, mid_jump=True)
         print('Jump')
-    elif (t == preload_steps + in_air_steps): # If in the mid of the jump phase
+
+    elif (t == preload_steps + in_air_steps): # If it is landing
         xnext,rcost = runningModels[t].calc(xs[t], us[t], opti)
         for foot in terminalModel.feet:
             opti.subject_to(foot(xs[t])[2] == foot(x0)[2] )
@@ -241,10 +232,6 @@ for t in range(T):
     totalcost += rcost
 
 opti.subject_to( xs[T][cmodel.nq:] == 0 )  # v_T = 0
-""" for foot in terminalModel.feet:
-    opti.subject_to(foot(xs[T])[2] == foot(x0)[2] )
-for vfoot in terminalModel.vfeet:
-    opti.subject_to(vfoot(xs[T]) == 0 ) """
 #opti.subject_to( xs[T][3:6] == 0 ) # Base flat
 #opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target ) # Base at target height
 
