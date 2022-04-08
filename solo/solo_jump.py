@@ -178,7 +178,7 @@ class CasadiActionModel:
     
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
 preload_steps = 15
-in_air_steps = 15
+in_air_steps = 16
 contactPattern = [] \
     + [ [ 1,1,1,1 ] ] * preload_steps \
     + [ [ 0,0,0,0 ] ] * in_air_steps  \
