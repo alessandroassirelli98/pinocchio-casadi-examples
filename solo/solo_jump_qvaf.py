@@ -30,7 +30,7 @@ plt.style.use('seaborn')
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
-DT = 0.02
+DT = 0.025
 z_target = .5
 
 ### LOAD AND DISPLAY SOLO
@@ -179,14 +179,14 @@ class CasadiActionModel:
 
         # Cost functions:
         cost = 0
-        cost += 1e-1 *casadi.sumsqr(u)
-        cost += 1e1 * casadi.sumsqr( self.difference(x,x0) ) * self.dt
+        cost += 1e1 *casadi.sumsqr(u)
+        cost += 1e3 * casadi.sumsqr( self.difference(x,x0) ) * self.dt
         #cost += sum( [ casadi.sumsqr(f) for f in fs ] )
         
         ### OCP additional constraints
 
         if(mid_jump):
-            cost += 1e5 * casadi.sumsqr(self.base_translation(x)[2] - z_target )
+            cost += 1e2 * casadi.sumsqr(self.com(x)[2] - z_target )
 
         if not self.freeFeet:
             for afoot in self.afeet:
@@ -194,8 +194,6 @@ class CasadiActionModel:
             for f,R in zip(fs,self.Rfeet):   # for cone constrains (flat terrain)
                 fw = R(x) @ f
                 ocp.subject_to(fw[2]>=0)
-        else:
-            [ocp.subject_to(f == 0 ) for f in fs]
             
         return xnext,cost
 
@@ -205,12 +203,12 @@ class CasadiActionModel:
 ########################################################################################################
 
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
-preload_steps = 10
-in_air_steps = 10
+preload_steps = 15
+in_air_steps = 20
 contactPattern = [] \
     + [ [ 1,1,1,1 ] ] * preload_steps \
     + [ [ 0,0,0,0 ] ] * in_air_steps  \
-    + [ [ 1,1,1,1 ] ] * 5  \
+    + [ [ 1,1,1,1 ] ] * 15  \
     + [ [ 1,1,1,1] ] 
 T = len(contactPattern)-1
     
@@ -248,9 +246,9 @@ for t in range(T):
 
     elif (t == preload_steps + in_air_steps): # If it is landing
         xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti)
-        for foot in terminalModel.feet:
+        for foot in runningModels[t].feet:
             opti.subject_to(foot(xs[t])[2] == foot(x0)[2] )
-        for vfoot in terminalModel.vfeet:
+        for vfoot in runningModels[t].vfeet:
             opti.subject_to(vfoot(xs[t]) == 0 )
         print('Landing') 
 
@@ -262,7 +260,8 @@ for t in range(T):
     totalcost += rcost
         
 opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
-#opti.subject_to(terminalModel.base_translation(xs[T])[2] == z_target)
+opti.subject_to(terminalModel.base_translation(xs[T])[2] >= 0.15)
+opti.subject_to(xs[T][3:6] == 0)
 #opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target ) # z_com(T) = ref
 #opti.subject_to( xs[T][3:6] == 0 ) # Base flat
 
@@ -401,5 +400,5 @@ np.save(open("/tmp/sol.npy", "wb"),
             "xs": xs_sol,
             "us": us_sol,
             "acs": acs_sol,
-            "fs": np.array(fs_sol0)
+            #"fs": np.array(fs_sol0)
         })
