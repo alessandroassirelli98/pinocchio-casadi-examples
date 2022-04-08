@@ -30,8 +30,8 @@ plt.style.use('seaborn')
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
-DT = 0.025
-z_target = .1
+DT = 0.02
+z_target = .5
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -53,11 +53,12 @@ data = model.createData()
 # Initial config, also used for warm start
 x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
 # quasi static for x0, used for warm-start and regularization
-u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
+u0 = 0*  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
                0.25720939, -0.51441314])
 
 contactIds = [ i for i,f in enumerate(cmodel.frames) if "FOOT" in f.name ]
+all_contacts = contactIds
 baseId = model.getFrameId('base_link')
 pin.framesForwardKinematics(model,data,x0[:model.nq])
 robotweight = -sum([Y.mass for Y in model.inertias]) * model.gravity.linear[2]
@@ -82,7 +83,9 @@ class CasadiActionModel:
         
         self.cmodel = cmodel
         self.contactIds = contactIds
-        
+        self.freeIds = []
+        [self.freeIds.append(idf) for idf in all_contacts if idf not in contactIds ]
+
         self.cdata = cdata = cmodel.createData()
         nq,nv = cmodel.nq,cmodel.nv
         self.nx = nq+nv
@@ -138,6 +141,8 @@ class CasadiActionModel:
         # feet[c](x) =  position of the foot <c> at configuration q=x[:nq]
         self.feet = [ casadi.Function('foot'+cmodel.frames[idf].name,
                                       [cx],[self.cdata.oMf[idf].translation]) for idf in contactIds ]
+        self.freeFeet = [ casadi.Function('free_foot'+cmodel.frames[idf].name,
+                                      [cx],[self.cdata.oMf[idf].translation]) for idf in self.freeIds ]
         # Rfeet[c](x) =  orientation of the foot <c> at configuration q=x[:nq]
         self.Rfeet = [ casadi.Function('Rfoot'+cmodel.frames[idf].name,
                                        [cx],[self.cdata.oMf[idf].rotation]) for idf in contactIds ]
@@ -151,7 +156,7 @@ class CasadiActionModel:
                        for idf in contactIds ]
 
         
-    def calc(self,x, u, a, fs, ocp):
+    def calc(self,x, u, a, fs, ocp, mid_jump = False):
         '''
         This function return xnext,cost
         '''
@@ -174,18 +179,23 @@ class CasadiActionModel:
 
         # Cost functions:
         cost = 0
-        cost += 1e-2*casadi.sumsqr(u-u0) * self.dt
-        cost += 1e-1*casadi.sumsqr( self.difference(x,x0) ) * self.dt
-        cost += 1e3 * casadi.sumsqr(x[3:6]) # Keep base flat
+        cost += 1e-1 *casadi.sumsqr(u)
+        cost += 1e1 * casadi.sumsqr( self.difference(x,x0) ) * self.dt
         #cost += sum( [ casadi.sumsqr(f) for f in fs ] )
         
         ### OCP additional constraints
-        for afoot in self.afeet:
-            ocp.subject_to( afoot(x,a) == 0 )
 
-        for f,R in zip(fs,self.Rfeet):   # for cone constrains (flat terrain)
-            fw = R(x) @ f
-            ocp.subject_to(fw[2]>=0)
+        if(mid_jump):
+            cost += 1e5 * casadi.sumsqr(self.base_translation(x)[2] - z_target )
+
+        if not self.freeFeet:
+            for afoot in self.afeet:
+                ocp.subject_to( afoot(x,a) == 0 )
+            for f,R in zip(fs,self.Rfeet):   # for cone constrains (flat terrain)
+                fw = R(x) @ f
+                ocp.subject_to(fw[2]>=0)
+        else:
+            [ocp.subject_to(f == 0 ) for f in fs]
             
         return xnext,cost
 
@@ -195,11 +205,13 @@ class CasadiActionModel:
 ########################################################################################################
 
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
+preload_steps = 10
+in_air_steps = 10
 contactPattern = [] \
-    + [ [ 1,1,1,1 ] ] * 10 \
-    + [ [ 1,1,1,1 ] ] * 0  \
-    + [ [ 1,1,1,1 ] ] * 0 \
-    + [ [ 1,1,1,1 ] ]
+    + [ [ 1,1,1,1 ] ] * preload_steps \
+    + [ [ 0,0,0,0 ] ] * in_air_steps  \
+    + [ [ 1,1,1,1 ] ] * 5  \
+    + [ [ 1,1,1,1] ] 
 T = len(contactPattern)-1
     
 def patternToId(pattern):
@@ -228,21 +240,31 @@ totalcost = 0
 opti.subject_to(dxs[0] == 0)
 
 for t in range(T):
+    print(contactPattern[t])
     
-    xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti )
-    opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == 0 ) # x' = f(x,u)
+    if (t == preload_steps + int(in_air_steps/2) -1): # If in the mid of the jump phase
+        xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti, mid_jump=True)
+        print('Jump')
 
+    elif (t == preload_steps + in_air_steps): # If it is landing
+        xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti)
+        for foot in terminalModel.feet:
+            opti.subject_to(foot(xs[t])[2] == foot(x0)[2] )
+        for vfoot in terminalModel.vfeet:
+            opti.subject_to(vfoot(xs[t]) == 0 )
+        print('Landing') 
+
+    else:
+        xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti)
+
+    opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
+    opti.subject_to(opti.bounded(-model.effortLimit[6 :],  us[t], model.effortLimit[6 :] ))
     totalcost += rcost
-
-    for i,c in enumerate(runningModels[t].contactIds):
-        if c not in runningModels[t-1].contactIds:
-            print(f'Impact for foot {i}:{c} at time {t}')
-            opti.subject_to( runningModels[t].feet[i](xs[t])[2] == footRadius )
-    
         
 opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
-opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target ) # z_com(T) = ref
-opti.subject_to( xs[T][3:6] == 0 ) # Base flat
+#opti.subject_to(terminalModel.base_translation(xs[T])[2] == z_target)
+#opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target ) # z_com(T) = ref
+#opti.subject_to( xs[T][3:6] == 0 ) # Base flat
 
 ### SOLVE
 opti.minimize(totalcost)
@@ -257,7 +279,24 @@ opti.callback(call)
 
 # Caution: in case the solver does not converge, we are picking the candidate values
 # at the last iteration in opti.debug, and they are NO guarantee of what they mean.
-try:
+sol = opti.solve()
+dxs_sol = np.array([ opti.value(x) for x in dxs ])
+xs_sol = np.array([ opti.value(x) for x in xs ])
+q_sol = xs_sol[:,: robot.nq]
+us_sol = np.array([ opti.value(u) for u in us ])
+acs_sol = np.array([ opti.value(a) for a in acs ])
+#fs_sol = [ np.split(opti.value(f),f.shape[0]//3) for f in fs ]
+base_log = []
+[base_log.append(terminalModel.base_translation(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
+base_log = np.array(base_log)
+### We reorganize fs_sol to have 4 contacts for each timestep, adding a 0 force when needed.
+""" fs_sol0 = [ np.concatenate([ \
+                            f[runningModels[t].contactIds.index(c) ] if c in runningModels[t].contactIds
+                            else np.zeros(3)
+                            for i,c in enumerate(contactIds)   ])
+            for t,f in enumerate(fs_sol) ] """
+
+""" try:
     sol = opti.solve()
     dxs_sol = np.array([ opti.value(x) for x in dxs ])
     xs_sol = np.array([ opti.value(x) for x in xs ])
@@ -281,7 +320,7 @@ except:
     xs_sol = np.array([ opti.value(x) for x in xs ])
     q_sol = xs_sol[:,: robot.nq]
     us_sol = np.array([ opti.debug.value(u) for u in us ])
-    fs_sol = [ opti.value(f) for f in fs ]
+    fs_sol = [ opti.value(f) for f in fs ] """
 
 
 viz.play(q_sol.T, terminalModel.dt)
@@ -290,7 +329,7 @@ viz.play(q_sol.T, terminalModel.dt)
 ### CHECK ######################################################################################################
 ### CHECK ######################################################################################################
 ### CHECK ######################################################################################################
-
+""" 
 ha = []
 
 nq,nv = model.nq,model.nv
@@ -331,7 +370,7 @@ for t,m in enumerate(runningModels):
     fs_world.append( np.concatenate([  data.oMf[idf].rotation @ fs_sol0[t][3*i:3*i+3] for i,idf in enumerate(contactIds) ]) )
 fs_world = np.array(fs_world)
 
-
+ """
 ### ------------------------------------------------------------------- ###
 # PLOT
 
