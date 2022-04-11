@@ -1,19 +1,19 @@
 '''
 OCP with constrained dynamics
 
-Simple example with regularization cost and terminal com+velocity constraint, known initial config.
+Simple example of jump
 
-min X,U    sum_t  ||u_t-u0||**2  + || diff(x_t,x0) ||**2 + || orientation(base(x_t)) ||**2
+min X,U     sum_t  ||u||**2  + || diff(x_t,x0) ||**2 + || com_z(t*) - z_target ||**2     # t* is the middle time of the flying phase
 s.t
         x_0 = x0
-        x_t+1  = EULER(x_t,u_t |  f=pin.constraintDynamics with 4 feet in contact )
+        x_t+1  = EULER(x_t,u_t |  f=pin.constraintDynamics with 4 or 0 feet in contact )
+        base_link_z(t) >= 0.03            # to avoid hitting the ground with the base
+        umin <= u(t) <= umax
+        v_feet(t_landing) = 0
+        p_feet(t_landing) = p_feet(x_0)
         v_T = x_T [nq:]  = 0
-        com(q_t)[2] = com(x_T[:nq])[2] = 0.1
-        orientation(base(x_T)) == 0
-
-So the robot should just bend to reach altitude COM 10cm while stoping at the end of the movement.
-
-Takes ~200 iteration for IpOpt ... :(
+        orientation(base(x_T)) = 0
+        base_link_z(T) >= 0.1
 
 '''
 
@@ -26,15 +26,12 @@ import matplotlib.pyplot as plt
 from pinocchio.visualize import GepettoVisualizer
 from time import time
                         
-
-
 plt.style.use('seaborn')
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
 DT = 0.015
 z_target = 0.5
-v_target = 4
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -56,13 +53,15 @@ viz.display(robot.q0)
 x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
 u0 = np.zeros(robot.nv - 6)
 
-contactIds = [ i for i,f in enumerate(cmodel.frames) if "FOOT" in f.name ]
-all_contacts = contactIds
+contactNames = [ f.name for f in cmodel.frames if "FOOT" in f.name ]
+allContactsIds = [ i for i,f in enumerate(cmodel.frames) if "FOOT" in f.name ]
 contact_frames = { i:f for i,f in enumerate(cmodel.frames) if "FOOT" in f.name }
 contact_models = [ cpin.RigidConstraintModel(cpin.ContactType.CONTACT_3D,cmodel,frame.parentJoint,frame.placement)
                     for frame in contact_frames.values() ]
+contact_models_dict = { str(idx) : contact_models[i] for i,idx in enumerate(allContactsIds) }
 baseId = model.getFrameId('base_link')
-contact_models_dict = { str(idx) : contact_models[i] for i,idx in enumerate(contactIds) }
+
+effort_limit = np.ones(robot.nv - 6) *3
 
 prox_settings = cpin.ProximalSettings(0,1e-9,1)
 for c in contact_models:
@@ -72,14 +71,13 @@ for c in contact_models:
 # The action model stores the computation of the dynamic -f- and cost -l- functions, both return by
 # calc as self.calc(x,u) -> [xnext=f(x,u),cost=l(x,u)]
 # The dynamics is obtained by RK4 integration of the pinocchio ABA function.
-# The cost is a sole regularization of u**2
 class CasadiActionModel:
     dt = DT
     def __init__(self,cmodel,contactIds,prox_settings):
 
         self.contactIds = contactIds
         self.freeIds = []
-        [self.freeIds.append(idf) for idf in all_contacts if idf not in contactIds ]
+        [self.freeIds.append(idf) for idf in allContactsIds if idf not in contactIds ]
 
         self.cmodel = cmodel
         self.contact_models = []
@@ -148,7 +146,7 @@ class CasadiActionModel:
 
 
         
-    def calc(self,x, u, ocp, mid_jump = False, start_jump = False):
+    def calc(self,x, u, ocp, mid_jump = False):
         # Return xnext,cost
         
         dt = self.dt
@@ -163,33 +161,25 @@ class CasadiActionModel:
         
         cost = 0
         cost += 1e-1 *casadi.sumsqr(u)
-        cost += 1e1 * casadi.sumsqr( self.difference(x,x0) ) * self.dt
-        #cost += 1e3 * casadi.sumsqr(x[3:6]) # Keep base flat
+        cost += 1e2 * casadi.sumsqr( self.difference(x,x0) ) * self.dt
 
-        if(self.freeFeet and mid_jump):
-            cost += 1e5 * casadi.sumsqr(self.base_translation(x)[2] - z_target )
-           #ocp.subject_to(self.base_translation(x)[2] > z_target)
-
-        """ if(start_jump):
-            cost += 1e3 * casadi.sumsqr(self.base_velocity(x)[2] - v_target )
-            #ocp.subject_to(self.base_velocity(x)[2] == 3) """
+        if(mid_jump):
+            cost += 1e2 * casadi.sumsqr(self.com(x)[2] - z_target )
 
         return xnext,cost
     
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
-preload_steps = 15
-in_air_steps = 15
+preload_steps = 10
+in_air_steps = 25
 contactPattern = [] \
     + [ [ 1,1,1,1 ] ] * preload_steps \
     + [ [ 0,0,0,0 ] ] * in_air_steps  \
-    + [ [ 1,1,1,1 ] ] * 5 \
+    + [ [ 1,1,1,1 ] ] * 20 \
     + [ [ 1,1,1,1] ] 
 T = len(contactPattern)-1
-
-timings = casadi.SX.sym('t', 2)
     
 def patternToId(pattern):
-    return tuple( contactIds[i] for i,c in enumerate(pattern) if c==1 )
+    return tuple( allContactsIds[i] for i,c in enumerate(pattern) if c==1 )
 
 ### PROBLEM
 opt_start_time  = time() 
@@ -216,7 +206,7 @@ for t in range(T):
 
     if (t == preload_steps + int(in_air_steps/2) -1): # If in the mid of the jump phase
         xnext,rcost = runningModels[t].calc(xs[t], us[t], opti, mid_jump=True)
-        print('Jump')
+        print('Mid of the jump')
 
     elif (t == preload_steps + in_air_steps): # If it is landing
         xnext,rcost = runningModels[t].calc(xs[t], us[t], opti)
@@ -227,13 +217,14 @@ for t in range(T):
         print('Landing') 
     else: 
         xnext,rcost = runningModels[t].calc(xs[t], us[t], opti)
+
     opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
-    opti.subject_to(opti.bounded(-model.effortLimit[6 :],  us[t], model.effortLimit[6 :] ))
+    opti.subject_to(opti.bounded(-effort_limit,  us[t], effort_limit ))
     totalcost += rcost
 
 opti.subject_to( xs[T][cmodel.nq:] == 0 )  # v_T = 0
-#opti.subject_to( xs[T][3:6] == 0 ) # Base flat
-#opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target ) # Base at target height
+opti.subject_to(terminalModel.base_translation(xs[T])[2] >= 0.1)
+opti.subject_to( xs[T][3:6] == 0 ) # Base flat
 
 
 ### SOLVE
@@ -260,38 +251,30 @@ try:
 except:
     print( 'No warm start' )
 
-
+opti.solver("ipopt") # set numerical backend
 cost_log = []
 def call(i):
     global cost_log
     cost_log += [opti.debug.value(totalcost)]
-
 opti.callback(call)
-opti.solver("ipopt") # set numerical backend
 
-# Caution: in case the solver does not converge, we are picking the candidate values
-# at the last iteration in opti.debug, and they are NO guarantee of what they mean.
-try:
-    sol = opti.solve()
-    dxs_sol = np.array([ opti.value(x) for x in dxs ])
-    xs_sol = np.array([ opti.value(x) for x in xs ])
-    q_sol = xs_sol[:, :robot.nq]
-    v_sol = xs_sol[:, robot.nq :]
-    us_sol = np.array([ opti.value(u) for u in us ])
-    base_log = []
-    [base_log.append(terminalModel.base_translation(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
-    base_log = np.array(base_log)
-    base_vel_log = []
-    [base_vel_log.append(terminalModel.base_velocity(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
-    base_vel_log = np.array(base_vel_log)
-except:
-    print('ERROR in convergence, plotting debug info.')
-    xs_sol = np.array([ opti.debug.value(x) for x in xs ])
-    us_sol = np.array([ opti.debug.value(u) for u in us ])
+sol = opti.solve()
+
+# Get optimization variables
+
+dxs_sol = np.array([ opti.value(x) for x in dxs ])
+xs_sol = np.array([ opti.value(x) for x in xs ])
+q_sol = xs_sol[:, :robot.nq]
+v_sol = xs_sol[:, robot.nq :]
+us_sol = np.array([ opti.value(u) for u in us ])
+com_log = []
+[com_log.append(terminalModel.com(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
+com_log = np.array(com_log)
+
 
 print("TOTAL OPTIMIZATION TIME: ", time() - opt_start_time)
-### CHECK
-### CHECK
+
+### ----------------------------------------------------------------------------- ###
 ### CHECK
 
 contact_frames = { i:f for i,f in enumerate(model.frames) if "FOOT" in f.name }
@@ -320,8 +303,13 @@ for t,(m,x1,u,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,xs_sol[1:]))
     hiter.append(prox_settings.iter) 
  """
 
-### ------------------------------------------------ ###
+### -------------------------------------------------------------------------------- ###
 # PLOT
+### ------------------------------------------------------------------- ###
+### PLOT
+
+viz.play(q_sol.T, terminalModel.dt)
+t_scale = np.linspace(0, (T+1)*DT, T+1)
 
 plt.figure(figsize=(12, 6), dpi = 90)
 plt.subplot(1,2,1)
@@ -334,27 +322,37 @@ plt.title('cost')
 plt.plot(cost_log)
 plt.draw()
 
-viz.play(q_sol.T, terminalModel.dt)
-
 legend = ['x', 'y', 'z']
-plt.figure()
+plt.figure(figsize=(12, 6), dpi = 90)
 for i in range(3):
     plt.subplot(3,1,i+1)
-    plt.title('Base link position_' + legend[i])
-    plt.plot(base_log[:, i])
+    plt.title('COM position ' + legend[i])
+    plt.plot(t_scale, com_log[:, i])
     if i == 2:
         plt.axhline(y = z_target, color = 'black', linestyle = '--')
+
+legend = ['Hip', 'Shoulder', 'Knee']
+plt.figure(figsize=(12, 6), dpi = 90)
+for i in range(4):
+    plt.subplot(2,2,i+1)
+    plt.title('Joint velocity of ' + contactNames[i])
+    [plt.plot(t_scale, xs_sol[:, nq + (3*i+jj)]*180/np.pi ) for jj in range(3) ]
+    plt.ylabel('Velocity [Deg/s]')
+    plt.xlabel('t[s]')
+    plt.legend(legend)
 plt.draw()
 
-legend = ['x', 'y', 'z']
-plt.figure()
-for i in range(3):
-    plt.subplot(3,1,i+1)
-    plt.title('Base link velocity_' + legend[i])
-    plt.plot(base_vel_log[:, i])
-    if i == 2:
-        plt.axhline(y = v_target, color = 'black', linestyle = '--')
-
+legend = ['Hip', 'Shoulder', 'Knee']
+plt.figure(figsize=(12, 6), dpi = 90)
+for i in range(4):
+    plt.subplot(2,2,i+1)
+    plt.title('Joint torques of ' + contactNames[i])
+    [plt.plot(t_scale[:-1], us_sol[:, (3*i+jj)]) for jj in range(3) ]
+    plt.axhline(y=effort_limit[0], color= 'black', linestyle = '--')
+    plt.axhline(y=-effort_limit[0], color= 'black', linestyle = '--')
+    plt.ylabel('Torque [N/m]')
+    plt.xlabel('t[s]')
+    plt.legend(legend)
 plt.draw()
 
 plt.show()
