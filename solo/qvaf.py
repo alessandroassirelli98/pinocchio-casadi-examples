@@ -3,14 +3,15 @@ OCP with constrained dynamics
 
 Simple example with regularization cost and terminal com+velocity constraint, known initial config.
 
-min X,U,A,F    sum_t  ||u_t-u0||**2  + || diff(x_t,x0) ||**2
+min X,U,A,F    sum_t  ||u_t-u0||**2  + || diff(x_t,x0) ||**2 + || orientation(base(x_t)) ||**2
 s.t
         x_0 = x0
         x_t+1  = EULER(x_t,u_t,f_t |  f=a_t )
         a_t = aba(q_t,v_t,u_t)
-        a_feet(t) = J a = 0
+        a_feet(t) = 0
         v_T = x_T [nq:]  = 0
         com(q_t)[2] = com(x_T[:nq])[2] = 0.1
+        orientation(base(x_T)) == 0
 
 So the robot should just bend to reach altitude COM 10cm while stoping at the end of the movement.
 The acceleration is introduced as an explicit (slack) variable to simplify the formation of the contact constraint.
@@ -23,13 +24,14 @@ from pinocchio import casadi as cpin
 import casadi
 import numpy as np
 import example_robot_data as robex
-#import matplotlib.pyplot as plt; plt.ion()
+import matplotlib.pyplot as plt
 from pinocchio.visualize import GepettoVisualizer
+plt.style.use('seaborn')
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
-T = 10
-DT = 0.05
+DT = 0.025
+z_target = .1
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -39,9 +41,10 @@ try:
     viz = GepettoVisualizer(robot.model,robot.collision_model,robot.visual_model)
     viz.initViewer()
     viz.loadViewerModel()
+    gv = viz.viewer.gui
 except:
     print("No viewer"  )
-    
+
 # The pinocchio model is what we are really interested by.
 model = robot.model
 cmodel = cpin.Model(robot.model)
@@ -50,12 +53,12 @@ data = model.createData()
 # Initial config, also used for warm start
 x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
 # quasi static for x0, used for warm-start and regularization
-u0 = np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
+u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
                0.25720939, -0.51441314])
 
 contactIds = [ i for i,f in enumerate(cmodel.frames) if "FOOT" in f.name ]
-
+baseId = model.getFrameId('base_link')
 pin.framesForwardKinematics(model,data,x0[:model.nq])
 robotweight = -sum([Y.mass for Y in model.inertias]) * model.gravity.linear[2]
 footRadius = np.mean([ data.oMf[c].translation[2] for c in contactIds ])
@@ -130,6 +133,8 @@ class CasadiActionModel:
 
         cpin.forwardKinematics(cmodel,cdata,cx[:nq],cx[nq:],ca)
         cpin.updateFramePlacements(cmodel,cdata)
+        # Base link position
+        self.base_translation = casadi.Function('base_translation', [cx], [ cdata.oMf[baseId].translation ])
         # feet[c](x) =  position of the foot <c> at configuration q=x[:nq]
         self.feet = [ casadi.Function('foot'+cmodel.frames[idf].name,
                                       [cx],[self.cdata.oMf[idf].translation]) for idf in contactIds ]
@@ -171,20 +176,19 @@ class CasadiActionModel:
         cost = 0
         cost += 1e-2*casadi.sumsqr(u-u0) * self.dt
         cost += 1e-1*casadi.sumsqr( self.difference(x,x0) ) * self.dt
+        cost += 1e3 * casadi.sumsqr(x[3:6]) # Keep base flat
         #cost += sum( [ casadi.sumsqr(f) for f in fs ] )
         
         ### OCP additional constraints
         for afoot in self.afeet:
             ocp.subject_to( afoot(x,a) == 0 )
 
-        for f,R in zip(fs,self.Rfeet):   # for cone constrains
+        for f,R in zip(fs,self.Rfeet):   # for cone constrains (flat terrain)
             fw = R(x) @ f
-            opti.subject_to(fw[2]>=0)
-
-        #R0 = np.eye(3)
-        #cost += cpin.log3( self.Rfeet[0](x) @ R0 )
+            ocp.subject_to(fw[2]>=0)
             
         return xnext,cost
+
 
 ########################################################################################################
 ### OCP PROBLEM ########################################################################################
@@ -193,8 +197,8 @@ class CasadiActionModel:
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
 contactPattern = [] \
     + [ [ 1,1,1,1 ] ] * 10 \
-    + [ [ 0,1,1,1 ] ] * 5  \
-    + [ [ 1,1,1,1 ] ] * 10 \
+    + [ [ 1,1,1,1 ] ] * 0  \
+    + [ [ 1,1,1,1 ] ] * 0 \
     + [ [ 1,1,1,1 ] ]
 T = len(contactPattern)-1
     
@@ -222,45 +226,48 @@ xs =  [ m.integrate(x0,dx) for m,dx in zip(runningModels+[terminalModel],dxs) ]
 # Roll out loop, summing the integral cost and defining the shooting constraints.
 totalcost = 0
 opti.subject_to(dxs[0] == 0)
-# for foot in runningModels[0].feet:
-#     opti.subject_to(foot(xs[0])[2]==0)
+
 for t in range(T):
     
     xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti )
-    opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == 0 ) # np.zeros(2*cmodel.nv) )  # x' = f(x,u)
+    opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == 0 ) # x' = f(x,u)
 
     totalcost += rcost
 
-    if t>0:
-        for i,c in enumerate(runningModels[t].contactIds):
-            if c not in runningModels[t-1].contactIds:
-                print(f'Impact for foot {i}:{c} at time {t}')
-                opti.subject_to( runningModels[t].feet[i](xs[t])[2] == footRadius )
+    for i,c in enumerate(runningModels[t].contactIds):
+        if c not in runningModels[t-1].contactIds:
+            print(f'Impact for foot {i}:{c} at time {t}')
+            opti.subject_to( runningModels[t].feet[i](xs[t])[2] == footRadius )
     
         
-opti.subject_to( xs[T][cmodel.nq:] == 0 )              # v_T = 0
-#opti.subject_to( xs[T][:3] == x0[:3] )              # x_T,y_T,z_T = x0,y0,z0
-#opti.subject_to( terminalModel.com(xs[T])[2] == .1 )   # z_com(T) = ref
-#totalcost += 1000 * (terminalModel.com(xs[T])[2] - .1)**2
-#totalcost += 1 * (terminalModel.com(xs[T//2])[2] - .3)**2
-opti.subject_to( terminalModel.com(xs[T])[2] == .1 )   # z_com(T) = ref
-#opti.subject_to( xs[T][3:6] == 0 )   # orientation flat
-
+opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
+opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target ) # z_com(T) = ref
+opti.subject_to( xs[T][3:6] == 0 ) # Base flat
 
 ### SOLVE
 opti.minimize(totalcost)
-for x in dxs: opti.set_initial(x,np.zeros(terminalModel.ndx))
-for u in us: opti.set_initial(u,u0)
 opti.solver("ipopt") # set numerical backend
+
+cost_log = []
+def call(i):
+    global cost_log
+    cost_log += [opti.debug.value(totalcost)]
+
+opti.callback(call)
+
 # Caution: in case the solver does not converge, we are picking the candidate values
 # at the last iteration in opti.debug, and they are NO guarantee of what they mean.
 try:
-    sol = opti.solve_limited()
+    sol = opti.solve()
     dxs_sol = np.array([ opti.value(x) for x in dxs ])
     xs_sol = np.array([ opti.value(x) for x in xs ])
+    q_sol = xs_sol[:,: robot.nq]
     us_sol = np.array([ opti.value(u) for u in us ])
     acs_sol = np.array([ opti.value(a) for a in acs ])
     fs_sol = [ np.split(opti.value(f),f.shape[0]//3) for f in fs ]
+    base_log = []
+    [base_log.append(terminalModel.base_translation(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
+    base_log = np.array(base_log)
     ### We reorganize fs_sol to have 4 contacts for each timestep, adding a 0 force when needed.
     fs_sol0 = [ np.concatenate([ \
                                 f[runningModels[t].contactIds.index(c) ] if c in runningModels[t].contactIds
@@ -272,8 +279,13 @@ except:
     print('ERROR in convergence, plotting debug info.')
     dxs_sol = np.array([ opti.debug.value(x) for x in dxs ])
     xs_sol = np.array([ opti.value(x) for x in xs ])
+    q_sol = xs_sol[:,: robot.nq]
     us_sol = np.array([ opti.debug.value(u) for u in us ])
     fs_sol = [ opti.value(f) for f in fs ]
+
+
+viz.play(q_sol.T, terminalModel.dt)
+
 
 ### CHECK ######################################################################################################
 ### CHECK ######################################################################################################
@@ -307,13 +319,9 @@ for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fs_sol,xs_
     pin.updateFramePlacements(model,data)
     for idf in m.contactIds:
         vf = pin.getFrameVelocity(model,data,idf)
-        #assert( sum(vf.linear**2) < 1e-3 )
+        #assert( sum(vf.linear**2) < 1e-8 )
         af = pin.getFrameClassicalAcceleration(model,data,idf,pin.LOCAL_WORLD_ALIGNED)
         assert( sum(af.linear**2) < 1e-8 )
-        
-
-    # for idf in m.contactIds:
-    #     assert( abs(data.oMf[idf].translation[2] )<1e-6 )
 
 
 # Gather forces in world frame
@@ -322,17 +330,37 @@ for t,m in enumerate(runningModels):
     pin.framesForwardKinematics(model, data, xs_sol[t, :nq])
     fs_world.append( np.concatenate([  data.oMf[idf].rotation @ fs_sol0[t][3*i:3*i+3] for i,idf in enumerate(contactIds) ]) )
 fs_world = np.array(fs_world)
-    
-import matplotlib.pylab as plt
-plt.ion()
+
+
+### ------------------------------------------------------------------- ###
+# PLOT
+
+plt.figure(figsize=(12, 6), dpi = 90)
+plt.subplot(1,2,1)
+plt.title('Residuals')
+plt.semilogy(opti.stats()['iterations']['inf_du'])
+plt.semilogy(opti.stats()['iterations']['inf_pr'])
+plt.legend(['dual', 'primal'])
+plt.subplot(1,2,2)
+plt.title('cost')
+plt.plot(cost_log)
+plt.draw()
+
+legend = ['x', 'y', 'z']
+plt.figure()
 for i in range(3):
     plt.subplot(3,1,i+1)
-    plt.plot(fs_world[:,i::3])
+    plt.title('Base link position_' + legend[i])
+    plt.plot(base_log[:, i])
+    if i == 2:
+        plt.axhline(y = z_target, color = 'black', linestyle = '--')
 
+plt.show()
 
 np.save(open("/tmp/sol.npy", "wb"),
         {
             "xs": xs_sol,
             "us": us_sol,
             "acs": acs_sol,
-            "fs": np.array(fs_sol0)})
+            "fs": np.array(fs_sol0)
+        })
