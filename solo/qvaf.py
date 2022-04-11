@@ -32,6 +32,7 @@ plt.style.use('seaborn')
 # Hyperparameters defining the optimal control problem.
 DT = 0.025
 z_target = .1
+mu = 1
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -176,16 +177,14 @@ class CasadiActionModel:
         cost = 0
         cost += 1e-2*casadi.sumsqr(u-u0) * self.dt
         cost += 1e-1*casadi.sumsqr( self.difference(x,x0) ) * self.dt
-        cost += 1e3 * casadi.sumsqr(x[3:6]) # Keep base flat
-        #cost += sum( [ casadi.sumsqr(f) for f in fs ] )
         
         ### OCP additional constraints
         for afoot in self.afeet:
             ocp.subject_to( afoot(x,a) == 0 )
 
-        for f,R in zip(fs,self.Rfeet):   # for cone constrains (flat terrain)
-            fw = R(x) @ f
-            ocp.subject_to(fw[2]>=0)
+        for f,R in zip(fs,self.Rfeet):   # Cone constrains (flat terrain)
+                fw = R(x) @ f
+                ocp.subject_to(mu **2 *fw[2]**2 >= casadi.sumsqr(fw[0:2]))
             
         return xnext,cost
 
