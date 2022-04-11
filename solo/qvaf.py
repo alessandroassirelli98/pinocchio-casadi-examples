@@ -184,6 +184,7 @@ class CasadiActionModel:
 
         for f,R in zip(fs,self.Rfeet):   # Cone constrains (flat terrain)
                 fw = R(x) @ f
+                ocp.subject_to(fw[2] >= 0)
                 ocp.subject_to(mu **2 *fw[2]**2 >= casadi.sumsqr(fw[0:2]))
             
         return xnext,cost
