@@ -8,7 +8,7 @@ s.t
         x_0 = x0
         x_t+1  = EULER(x_t,u_t |  f=pin.constraintDynamics with 4 feet in contact )
         v_T = x_T [nq:]  = 0
-        com(q_t)[2] = com(x_T[:nq])[2] = 0.1
+        com(q_t)[2] = com(x_T[:nq])[2] = 0.13
         orientation(base(x_T)) == 0
 
 So the robot should just bend to reach altitude COM 10cm while stoping at the end of the movement.
