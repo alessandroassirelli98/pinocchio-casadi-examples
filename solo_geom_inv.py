@@ -9,7 +9,7 @@ subject to  q = pin.integrate(q0, Dq)
             f_i X (com_pos - p_i) == 0 # zero angular momentum at the com 
 
             # The friction cone constraint can be one of the following:
-            0)  || f_t ||**2 <= mu * || f_n ||**2   # f_t and f_n are the tangential and orthogonal component of the contact force
+            0)  || f_t ||**2 <= mu**2 * || f_n ||**2   # f_t and f_n are the tangential and orthogonal component of the contact force
             1)  || f @ k.T @ k - k @ k.T @ f ||**2 <= k.T @ f @ f.T @ k @k.T @ k    # k is the vector normal to the ground, while f is the vector of contact force
             2)  || f.T @ k ||**2 >= (cos(alpha_k))**2 || f ||**2 * || k ||**2   # here alpha_k is the angle of the friction cone, alpha_k = tan^{-1} mu
 
