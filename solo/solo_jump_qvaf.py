@@ -30,7 +30,7 @@ plt.style.use('seaborn')
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
-DT = 0.025
+DT = 0.015
 z_target = .5
 
 ### LOAD AND DISPLAY SOLO
@@ -179,7 +179,7 @@ class CasadiActionModel:
 
         # Cost functions:
         cost = 0
-        cost += 1e1 *casadi.sumsqr(u)
+        cost += 1e2 *casadi.sumsqr(u)
         cost += 1e3 * casadi.sumsqr( self.difference(x,x0) ) * self.dt
         #cost += sum( [ casadi.sumsqr(f) for f in fs ] )
         
@@ -203,12 +203,12 @@ class CasadiActionModel:
 ########################################################################################################
 
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
-preload_steps = 15
-in_air_steps = 20
+preload_steps = 20
+in_air_steps = 25
 contactPattern = [] \
     + [ [ 1,1,1,1 ] ] * preload_steps \
     + [ [ 0,0,0,0 ] ] * in_air_steps  \
-    + [ [ 1,1,1,1 ] ] * 15  \
+    + [ [ 1,1,1,1 ] ] * 20  \
     + [ [ 1,1,1,1] ] 
 T = len(contactPattern)-1
     
@@ -256,11 +256,12 @@ for t in range(T):
         xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti)
 
     opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
+    opti.subject_to(runningModels[t].com(xs[t])[2] >= 0.03)
     opti.subject_to(opti.bounded(-model.effortLimit[6 :],  us[t], model.effortLimit[6 :] ))
     totalcost += rcost
         
 opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
-opti.subject_to(terminalModel.base_translation(xs[T])[2] >= 0.15)
+opti.subject_to(terminalModel.com(xs[T])[2] >= 0.15)
 opti.subject_to(xs[T][3:6] == 0)
 #opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target ) # z_com(T) = ref
 #opti.subject_to( xs[T][3:6] == 0 ) # Base flat
