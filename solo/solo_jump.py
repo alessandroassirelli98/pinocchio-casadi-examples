@@ -49,6 +49,7 @@ except:
 model = robot.model
 cmodel = cpin.Model(robot.model)
 data = model.createData()
+nq,nv = model.nq,model.nv
 viz.display(robot.q0)
 
 # Initial config, also used for warm start
@@ -276,34 +277,47 @@ com_log = np.array(com_log)
 
 print("TOTAL OPTIMIZATION TIME: ", time() - opt_start_time)
 
+
 ### ----------------------------------------------------------------------------- ###
 ### CHECK
 
 contact_frames = { i:f for i,f in enumerate(model.frames) if "FOOT" in f.name }
 contact_models = [ pin.RigidConstraintModel(pin.ContactType.CONTACT_3D,model,frame.parentJoint,frame.placement)
                     for frame in contact_frames.values() ]
+contact_models_dict = { str(idx) : contact_models[i] for i,idx in enumerate(allContactsIds) }
 prox_settings = pin.ProximalSettings(0,1e-9,5)
 for c in contact_models:
     c.corrector.Kd=0#1e-3
 contact_datas = [ m.createData() for m in contact_models ]
-pin.initConstraintDynamics(model,data,contact_models)
+
+contact_models_dict = { str(idx) : contact_models[i] for i,idx in enumerate(allContactsIds) }
+contact_data_dict = { str(idx) : contact_datas[i] for i,idx in enumerate(allContactsIds) }
+
+contactModelsSequence = []
+contactDataSequence = []
+for idxs in contactSequence:
+    cm_tmp = []
+    cd_tmp = []
+    for idx in idxs:
+        cm_tmp += [contact_models_dict[str(idx)]]
+        cd_tmp += [contact_data_dict[str(idx)]]
+    contactModelsSequence.append(cm_tmp)
+    contactDataSequence.append(cd_tmp)
+
+
+hiter = []
 nq,nv = model.nq,model.nv
-
-
-""" hiter = []
-
 # Check that all constraints are respected
 for t,(m,x1,u,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,xs_sol[1:])):
     tau = np.concatenate([np.zeros(6),u])
     q1,v1 = x1[:nq],x1[nq:]
-    a = pin.constraintDynamics(model,data,x1[:nq],x1[nq:],tau,contact_models,contact_datas,prox_settings)
+    pin.initConstraintDynamics(model,data,contactModelsSequence[t])
+    a = pin.constraintDynamics(model,data,x1[:nq],x1[nq:],tau,contactModelsSequence[t],contactDataSequence[t],prox_settings)
+    hiter.append(a.copy())
     vnext = v1+a*m.dt
     qnext = pin.integrate(model,q1,vnext*m.dt)
     xnext = np.concatenate([qnext,vnext])
     assert( np.linalg.norm(xnext-x2) < 1e-6 )
-    #assert( prox_settings.iter<=2 )
-    hiter.append(prox_settings.iter) 
- """
 
 ### ------------------------------------------------------------------- ###
 ### PLOT
