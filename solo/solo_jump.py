@@ -15,6 +15,8 @@ s.t
         orientation(base(x_T)) = 0
         base_link_z(T) >= 0.1
 
+It takes around 250 iter to converge without warmstart...
+If warmstarted with the solution obtained by the ocp without warmstart then it takes around 20 iter
 '''
 
 import pinocchio as pin
@@ -237,9 +239,7 @@ try:
     guesses = np.load("/tmp/sol.npy",allow_pickle=True).item()
     xs_g = guesses['xs']
     us_g = guesses['us']
-    acs_g = guesses['acs']
-    fs_g = guesses['fs']
-    
+
     def xdiff(x1,x2):
         nq = model.nq
         return np.concatenate([
@@ -247,6 +247,8 @@ try:
 
     for x,xg in zip(dxs,xs_g): opti.set_initial(x, xdiff(x0,xg))
     for u,ug in zip(us,us_g): opti.set_initial(u,ug)
+
+    print('Got warm start')
     
 except:
     print( 'No warm start' )
@@ -303,8 +305,6 @@ for t,(m,x1,u,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,xs_sol[1:]))
     hiter.append(prox_settings.iter) 
  """
 
-### -------------------------------------------------------------------------------- ###
-# PLOT
 ### ------------------------------------------------------------------- ###
 ### PLOT
 
