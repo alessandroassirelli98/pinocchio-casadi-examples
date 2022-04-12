@@ -19,7 +19,8 @@ s.t
         base_link_z(T) >= 0.1
         || f_t ||**2 <= mu * || f_n ||**2   # f_t and f_n are the tangential and orthogonal component of the contact force
 
-
+It takes around 1300 iter to converge without warmstart...
+If warmstarted with the solution obtained by the ocp without warmstart then it takes 900 iter
 '''
 
 import pinocchio as pin
@@ -197,8 +198,10 @@ class CasadiActionModel:
             for f,R in zip(fs,self.Rfeet):   # Cone constrains (flat terrain)
                 fw = R(x) @ f
                 ocp.subject_to(fw[2] >= 0)
-                ocp.subject_to(mu*fw[2] >= casadi.sqrt(fw[0]**2) )
-                ocp.subject_to(mu*fw[2] >= casadi.sqrt(fw[1]**2) )
+                ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))
+                #ocp.subject_to(mu*fw[2] >= casadi.sqrt(fw[0]**2) )     # For linear constraints
+                #ocp.subject_to(mu*fw[2] >= casadi.sqrt(fw[1]**2) )     # For linear constraints
+
 
             
         return xnext,cost
