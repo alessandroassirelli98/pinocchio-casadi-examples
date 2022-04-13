@@ -3,7 +3,7 @@ OCP with constrained dynamics
 
 Simple example of walk  
 
-It takes around 280 iter to converge without warmstart
+It takes around 22 iter to converge without warmstart
 If warmstarted with the solution obtained by the ocp without warmstart then it takes 900 iter
 '''
 
@@ -176,7 +176,7 @@ class CasadiActionModel:
         # Cost functions:
         cost = 0
         cost += 1e-1 *casadi.sumsqr(u)
-        cost += 1e2 * casadi.sumsqr(x[: nq] - x0[: nq]) * self.dt
+        cost += 1e3 * casadi.sumsqr(x[: nq] - x0[: nq]) * self.dt
         cost += 1e3 * casadi.sumsqr(self.baseVelocityLin(x) - v_lin_target) * self.dt
         cost += 1e3 * casadi.sumsqr(self.baseVelocityAng(x) - v_ang_target) * self.dt
         
@@ -208,11 +208,11 @@ class CasadiActionModel:
 
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
 contactPattern = [] \
-    + [ [ 1,1,1,1 ] ] * 3 \
-    + [ [ 1,0,0,1 ] ] * 8  \
-    + [ [ 0,1,1,0 ] ] * 8  \
-    + [ [ 1,1,1,1] ] * 3 \
-    + [ [ 1,1,1,1] ] 
+    + [ [ 1,1,1,1 ] ] * 0 \
+    + [ [ 1,0,0,1 ] ] * 10  \
+    + [ [ 0,1,1,0 ] ] * 10  \
+    + [ [ 1,1,1,1] ] * 0 \
+    + [ [ 1,1,1,1] ]  *0
 T = len(contactPattern)-1
     
 def patternToId(pattern):
@@ -260,9 +260,14 @@ for t in range(T):
     opti.subject_to(opti.bounded(-effort_limit,  us[t], effort_limit ))
     totalcost += rcost
         
-opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
+#opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
 #opti.subject_to(terminalModel.base_translation(xs[T])[2] >= 0.1)
 
+""" for swFoot in terminalModel.freeIds:
+    opti.subject_to(terminalModel.feet[swFoot](xs[t])[2] == terminalModel.feet[swFoot](x0)[2] )
+for swFoot in terminalModel.freeIds:
+    opti.subject_to(terminalModel.vfeet[swFoot](xs[t]) == 0)
+ """
 opti.minimize(totalcost)
 opti.solver("ipopt") # set numerical backend
 
