@@ -28,7 +28,7 @@ kx = 1
 ky = 1
 k = np.array([kx, ky])
 step_height = 0.05
-v_lin_target = np.array([0.5, 0, 0])
+v_lin_target = np.array([1, 0, 0])
 v_ang_target = np.array([0, 0, 0])
 
 ### LOAD AND DISPLAY SOLO
@@ -209,9 +209,9 @@ class CasadiActionModel:
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
 contactPattern = [] \
     + [ [ 1,0,0,1 ] ] * walking_steps  \
-    + [ [ 0,1,1,0 ] ] * walking_steps \
-    + [ [ 1,0,0,1 ] ] * walking_steps  \
     + [ [ 0,1,1,0 ] ] * walking_steps 
+
+contactPattern = contactPattern*4
     
 T = len(contactPattern) - 1
     
