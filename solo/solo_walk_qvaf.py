@@ -22,12 +22,13 @@ path = os.getcwd()
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
 DT = 0.015
+walking_steps = 15
 mu = 1
 kx = 1
 ky = 1
 k = np.array([kx, ky])
-step_height = 0.1
-v_lin_target = np.array([1, 0, 0])
+step_height = 0.05
+v_lin_target = np.array([0.5, 0, 0])
 v_ang_target = np.array([0, 0, 0])
 
 ### LOAD AND DISPLAY SOLO
@@ -175,7 +176,7 @@ class CasadiActionModel:
 
         # Cost functions:
         cost = 0
-        cost += 1e-1 *casadi.sumsqr(u)
+        cost += 1e0 *casadi.sumsqr(u)
         cost += 1e3 * casadi.sumsqr(x[: nq] - x0[: nq]) * self.dt
         cost += 1e3 * casadi.sumsqr(self.baseVelocityLin(x) - v_lin_target) * self.dt
         cost += 1e3 * casadi.sumsqr(self.baseVelocityAng(x) - v_ang_target) * self.dt
@@ -190,12 +191,11 @@ class CasadiActionModel:
             fw = R @ f
             ocp.subject_to(fw[2] >= 0)
             ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))
-
-            #cost += casadi.sumsqr(fw[2] - robotweight/len(self.contactIds)) * self.dt
+            cost += 1e1 * casadi.sumsqr(fw[2] - robotweight/len(self.contactIds)) * self.dt
         
         for sw_foot in self.freeIds:
             ocp.subject_to(self.feet[sw_foot](x)[2] >= self.feet[sw_foot](x0)[2])
-            #cost += 1e2 * casadi.sumsqr(self.feet[sw_foot](x)[2] - step_height)
+            cost += 1e5 * casadi.sumsqr(self.feet[sw_foot](x)[2] - step_height) *self.dt
             #ocp.subject_to(self.vfeet[sw_foot](x)[0:2] == k* self.feet[sw_foot](x)[2])
 
 
@@ -208,12 +208,12 @@ class CasadiActionModel:
 
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
 contactPattern = [] \
-    + [ [ 1,1,1,1 ] ] * 0 \
-    + [ [ 1,0,0,1 ] ] * 10  \
-    + [ [ 0,1,1,0 ] ] * 10  \
-    + [ [ 1,1,1,1] ] * 0 \
-    + [ [ 1,1,1,1] ]  *0
-T = len(contactPattern)-1
+    + [ [ 1,0,0,1 ] ] * walking_steps  \
+    + [ [ 0,1,1,0 ] ] * walking_steps \
+    + [ [ 1,0,0,1 ] ] * walking_steps  \
+    + [ [ 0,1,1,0 ] ] * walking_steps 
+    
+T = len(contactPattern) - 1
     
 def patternToId(pattern):
     return tuple( allContactIds[i] for i,c in enumerate(pattern) if c==1 )
@@ -320,9 +320,13 @@ fs_sol0 = [ np.concatenate([ \
                             for i,c in enumerate(allContactIds)   ])
             for t,f in enumerate(fs_sol) ]
 
-com_log = []
-[com_log.append(terminalModel.com(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
-com_log = np.array(com_log)
+base_pos_log = []
+[base_pos_log.append(terminalModel.baseTranslation(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
+base_pos_log = np.array(base_pos_log)
+
+base_vel_log = []
+[base_vel_log.append(terminalModel.baseVelocityLin(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
+base_vel_log = np.array(base_vel_log)
 
 feet_log = {i:[] for i in allContactIds}
 for foot in feet_log:
@@ -394,14 +398,21 @@ plt.title('cost')
 plt.plot(cost_log)
 plt.draw()
 
-""" legend = ['x', 'y', 'z']
+legend = ['x', 'y', 'z']
 plt.figure(figsize=(12, 6), dpi = 90)
 for i in range(3):
     plt.subplot(3,1,i+1)
-    plt.title('COM position ' + legend[i])
-    plt.plot(t_scale, com_log[:, i])
-    if i == 2:
-        plt.axhline(y = z_target, color = 'black', linestyle = '--') """
+    plt.title('Base position ' + legend[i])
+    plt.plot(t_scale, base_pos_log[:, i])
+
+legend = ['x', 'y', 'z']
+plt.figure(figsize=(12, 6), dpi = 90)
+for i in range(3):
+    plt.subplot(3,1,i+1)
+    plt.title('Base velocity ' + legend[i])
+    plt.plot(t_scale, base_vel_log[:, i])
+    if i == 0:
+        plt.axhline(y=v_lin_target[0], color= 'black', linestyle = '--')
 
 legend = ['x', 'y', 'z']
 plt.figure(figsize=(12, 6), dpi = 90)
@@ -411,6 +422,9 @@ for i in range(3):
         plt.title('Foot position on ' + legend[i])
         plt.plot(t_scale, feet_log[foot][:, i])
         plt.legend(contactNames)
+        if i == 2:
+            plt.axhline(y=step_height, color= 'black', linestyle = '--')
+        
 
 legend = ['Hip', 'Shoulder', 'Knee']
 plt.figure(figsize=(12, 6), dpi = 90)
