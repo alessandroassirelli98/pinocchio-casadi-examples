@@ -189,7 +189,7 @@ class CasadiActionModel:
             f = fs[i]
             fw = R @ f
             ocp.subject_to(fw[2] >= 0)
-            """ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))"""
+            ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))
 
             #cost += casadi.sumsqr(fw[2] - robotweight/len(self.contactIds)) * self.dt
         
