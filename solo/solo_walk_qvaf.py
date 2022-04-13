@@ -1,25 +1,9 @@
 '''
 OCP with constrained dynamics
 
-Simple example of jump
+Simple example of walk  
 
-min X,U,A,F    sum_t  ||u||**2  + || diff(x_t,x0) ||**2 + || com_z(t*) - z_target ||**2     # t* is the middle time of the flying phase
-s.t
-        x_0 = x0
-        x_t+1  = EULER(x_t, a_t) 
-        a_t = aba(q_t,v_t,u_t, f_t) # The forces f_t can be either 4 vectors or none,
-                                    # Depending on the phase of the timestep
-        a_feet(tc) = 0              # tc is the time in which the constraint dynamics is active
-        base_link_z(t) >= 0.03            # to avoid hitting the ground with the base
-        umin <= u(t) <= umax
-        v_feet(t_landing) = 0
-        p_feet(t_landing) = p_feet(x_0)
-        v_T = x_T [nq:]  = 0
-        orientation(base(x_T)) = 0
-        base_link_z(T) >= 0.1
-        || f_t ||**2 <= mu * || f_n ||**2   # f_t and f_n are the tangential and orthogonal component of the contact force
-
-It takes around 1300 iter to converge without warmstart...
+It takes around 280 iter to converge without warmstart
 If warmstarted with the solution obtained by the ocp without warmstart then it takes 900 iter
 '''
 
@@ -31,16 +15,20 @@ import example_robot_data as robex
 import matplotlib.pyplot as plt
 from pinocchio.visualize import GepettoVisualizer
 from time import time
+import os
 plt.style.use('seaborn')
+path = os.getcwd()
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
-DT = 0.02
+DT = 0.015
 mu = 1
 kx = 1
 ky = 1
 k = np.array([kx, ky])
 step_height = 0.1
+v_lin_target = np.array([1, 0, 0])
+v_ang_target = np.array([0, 0, 0])
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -146,7 +134,8 @@ class CasadiActionModel:
         # Base link position
         self.baseTranslation = casadi.Function('base_translation', [cx], [ cdata.oMf[baseId].translation ])
         # Base velocity
-        self.baseVelocity = casadi.Function('base_velocity', [cx], [cpin.getFrameVelocity( cmodel,cdata,baseId,pin.LOCAL_WORLD_ALIGNED ).linear])
+        self.baseVelocityLin = casadi.Function('base_velocity_linear', [cx], [cpin.getFrameVelocity( cmodel,cdata,baseId,pin.LOCAL_WORLD_ALIGNED ).linear])
+        self.baseVelocityAng = casadi.Function('base_velocity_angular', [cx], [cpin.getFrameVelocity( cmodel,cdata,baseId,pin.LOCAL_WORLD_ALIGNED ).angular])
         # feet[c](x) =  position of the foot <c> at configuration q=x[:nq]
         self.feet = {idf : casadi.Function('foot'+cmodel.frames[idf].name,
                                      [cx], [cdata.oMf[idf].translation]) for idf in allContactIds }
@@ -187,9 +176,9 @@ class CasadiActionModel:
         # Cost functions:
         cost = 0
         cost += 1e-1 *casadi.sumsqr(u)
-        cost += 1e1 * casadi.sumsqr(self.difference(x,x0)) * self.dt
-        cost += 1e2 * casadi.sumsqr(self.baseVelocity(x)[0] - 0.1)
-
+        cost += 1e2 * casadi.sumsqr(x[: nq] - x0[: nq]) * self.dt
+        cost += 1e3 * casadi.sumsqr(self.baseVelocityLin(x) - v_lin_target) * self.dt
+        cost += 1e3 * casadi.sumsqr(self.baseVelocityAng(x) - v_ang_target) * self.dt
         
         # Contact constraints
         for i, stFoot in enumerate(self.contactIds):
@@ -200,9 +189,12 @@ class CasadiActionModel:
             f = fs[i]
             fw = R @ f
             ocp.subject_to(fw[2] >= 0)
-            ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))
+            """ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))"""
+
+            #cost += casadi.sumsqr(fw[2] - robotweight/len(self.contactIds)) * self.dt
         
-        #for sw_foot in self.freeIds:
+        for sw_foot in self.freeIds:
+            ocp.subject_to(self.feet[sw_foot](x)[2] >= self.feet[sw_foot](x0)[2])
             #cost += 1e2 * casadi.sumsqr(self.feet[sw_foot](x)[2] - step_height)
             #ocp.subject_to(self.vfeet[sw_foot](x)[0:2] == k* self.feet[sw_foot](x)[2])
 
@@ -268,7 +260,7 @@ for t in range(T):
     opti.subject_to(opti.bounded(-effort_limit,  us[t], effort_limit ))
     totalcost += rcost
         
-#opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
+opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
 #opti.subject_to(terminalModel.base_translation(xs[T])[2] >= 0.1)
 
 opti.minimize(totalcost)
@@ -283,7 +275,7 @@ opti.callback(call)
 
 # Try to warmstart the problem
 try:
-    guesses = np.load("/tmp/sol.npy",allow_pickle=True).item()
+    guesses = np.load(path + '/sol.npy',allow_pickle=True).item()
     xs_g = guesses['xs']
     us_g = guesses['us']
     acs_g = guesses['acs']
@@ -455,7 +447,7 @@ plt.show()
 
 plt.show()
 
-np.save(open("/tmp/sol.npy", "wb"),
+np.save(open(path + '/sol.npy', "wb"),
         {
             "xs": xs_sol,
             "us": us_sol,
