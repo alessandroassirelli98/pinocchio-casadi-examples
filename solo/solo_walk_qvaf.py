@@ -178,8 +178,8 @@ class CasadiActionModel:
         cost = 0
         cost += 1e0 *casadi.sumsqr(u)
         cost += 1e3 * casadi.sumsqr(x[: nq] - x0[: nq]) * self.dt
-        cost += 1e2 * casadi.sumsqr(self.baseVelocityLin(x) - v_lin_target) * self.dt
-        cost += 1e2 * casadi.sumsqr(self.baseVelocityAng(x) - v_ang_target) * self.dt
+        cost += 1e3 * casadi.sumsqr(self.baseVelocityLin(x) - v_lin_target) * self.dt
+        cost += 1e3 * casadi.sumsqr(self.baseVelocityAng(x) - v_ang_target) * self.dt
         
         # Contact constraints
         for i, stFoot in enumerate(self.contactIds):
@@ -195,8 +195,8 @@ class CasadiActionModel:
         
         for sw_foot in self.freeIds:
             ocp.subject_to(self.feet[sw_foot](x)[2] >= self.feet[sw_foot](x0)[2])
-            cost += 1e5 * casadi.sumsqr(self.feet[sw_foot](x)[2] - step_height) *self.dt
-            #ocp.subject_to(self.vfeet[sw_foot](x)[0:2] == k* self.feet[sw_foot](x)[2])
+            #cost += 1e5 * casadi.sumsqr(self.feet[sw_foot](x)[2] - step_height) *self.dt
+            ocp.subject_to(self.vfeet[sw_foot](x)[0:2] <= k* self.feet[sw_foot](x)[2])
 
 
         return xnext,cost
@@ -211,7 +211,7 @@ contactPattern = [] \
     + [ [ 1,0,0,1 ] ] * walking_steps  \
     + [ [ 0,1,1,0 ] ] * walking_steps 
 
-contactPattern = contactPattern*4
+contactPattern = contactPattern*2
     
 T = len(contactPattern) - 1
     
