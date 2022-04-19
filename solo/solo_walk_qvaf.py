@@ -22,14 +22,20 @@ path = os.getcwd()
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
 DT = 0.015
-walking_steps = 15
+walking_steps = 20
 mu = 1
-kx = 1
+kx = 10
 ky = 1
 k = np.array([kx, ky])
 step_height = 0.05
 v_lin_target = np.array([1, 0, 0])
 v_ang_target = np.array([0, 0, 0])
+
+position_weight = np.array([2, 2, 20])
+orientation_weight = np.array([0.25, 0.25, 10])
+lin_vel_weight = np.array([10, 5, 5])
+ang_vel_weight = np.array([1, 1, 1])
+force_reg_weight = 1e-1
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -134,6 +140,7 @@ class CasadiActionModel:
         cpin.updateFramePlacements(cmodel,cdata)
         # Base link position
         self.baseTranslation = casadi.Function('base_translation', [cx], [ cdata.oMf[baseId].translation ])
+        self.baseRotation = casadi.Function('base_rotation', [cx], [ cdata.oMf[baseId].rotation ])
         # Base velocity
         self.baseVelocityLin = casadi.Function('base_velocity_linear', [cx], [cpin.getFrameVelocity( cmodel,cdata,baseId,pin.LOCAL_WORLD_ALIGNED ).linear])
         self.baseVelocityAng = casadi.Function('base_velocity_angular', [cx], [cpin.getFrameVelocity( cmodel,cdata,baseId,pin.LOCAL_WORLD_ALIGNED ).angular])
@@ -171,15 +178,19 @@ class CasadiActionModel:
         vnext = x[nq:] + a*dt
         qnext = self.integrate_q(x[:nq], vnext*dt)
         xnext = casadi.vertcat(qnext,vnext)
+
         # The acceleration <a> is then constrained to follow ABA.
         ocp.subject_to( self.acc(x,tau,*fs ) == a )
 
         # Cost functions:
         cost = 0
-        cost += 1e0 *casadi.sumsqr(u)
-        cost += 1e3 * casadi.sumsqr(x[: nq] - x0[: nq]) * self.dt
-        cost += 1e3 * casadi.sumsqr(self.baseVelocityLin(x) - v_lin_target) * self.dt
-        cost += 1e3 * casadi.sumsqr(self.baseVelocityAng(x) - v_ang_target) * self.dt
+        cost += 1e0 *casadi.sumsqr(u) *self.dt
+        cost += 1e1 *casadi.sumsqr(x[3:7] - x0[3:7]) * self.dt
+        cost += 1e2 *casadi.sumsqr(x[7 : nq] - x0[7: nq]) *self.dt
+
+        #cost += casadi.sumsqr(position_weight*(self.baseTranslation(x) - self.baseTranslation(x0))) *self.dt
+        cost += casadi.sumsqr(lin_vel_weight*(self.baseVelocityLin(x) - v_lin_target)) * self.dt
+        cost += casadi.sumsqr(ang_vel_weight*(self.baseVelocityAng(x) - v_ang_target)) * self.dt
         
         # Contact constraints
         for i, stFoot in enumerate(self.contactIds):
@@ -191,7 +202,7 @@ class CasadiActionModel:
             fw = R @ f
             ocp.subject_to(fw[2] >= 0)
             ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))
-            cost += 1e1 * casadi.sumsqr(fw[2] - robotweight/len(self.contactIds)) * self.dt
+            cost += force_reg_weight * casadi.sumsqr(fw[2] - robotweight/len(self.contactIds)) * self.dt
         
         for sw_foot in self.freeIds:
             ocp.subject_to(self.feet[sw_foot](x)[2] >= self.feet[sw_foot](x0)[2])
@@ -335,6 +346,13 @@ for foot in feet_log:
         tmp += [ terminalModel.feet[foot](xs_sol[i]).full()[:, 0] ]
     feet_log[foot] = np.array(tmp)
 
+feet_vel_log = {i:[] for i in allContactIds}
+for foot in feet_vel_log:
+    tmp = []
+    for i in range(len(xs_sol)):
+        tmp += [ terminalModel.vfeet[foot](xs_sol[i]).full()[:, 0] ]
+    feet_vel_log[foot] = np.array(tmp)
+
 
 # Gather forces in world frame
 fs_world = []
@@ -425,6 +443,14 @@ for i in range(3):
         if i == 2:
             plt.axhline(y=step_height, color= 'black', linestyle = '--')
         
+legend = ['x', 'y', 'z']
+plt.figure(figsize=(12, 6), dpi = 90)
+for i in range(3):
+    for foot in allContactIds:
+        plt.subplot(3,1,i+1)
+        plt.title('Foot velocity on ' + legend[i])
+        plt.plot(t_scale, feet_vel_log[foot][:, i])
+        plt.legend(contactNames)
 
 legend = ['Hip', 'Shoulder', 'Knee']
 plt.figure(figsize=(12, 6), dpi = 90)
