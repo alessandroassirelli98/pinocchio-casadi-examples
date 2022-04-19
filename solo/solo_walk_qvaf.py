@@ -25,16 +25,14 @@ DT = 0.015
 walking_steps = 20
 mu = 1
 kx = 10
-ky = 1
+ky = 10
 k = np.array([kx, ky])
 step_height = 0.05
 v_lin_target = np.array([1, 0, 0])
 v_ang_target = np.array([0, 0, 0])
 
-position_weight = np.array([2, 2, 20])
-orientation_weight = np.array([0.25, 0.25, 10])
-lin_vel_weight = np.array([10, 5, 5])
-ang_vel_weight = np.array([1, 1, 1])
+lin_vel_weight = np.array([10, 10, 10])
+ang_vel_weight = np.array([10, 10, 10])
 force_reg_weight = 1e-1
 
 ### LOAD AND DISPLAY SOLO
@@ -184,7 +182,7 @@ class CasadiActionModel:
 
         # Cost functions:
         cost = 0
-        cost += 1e0 *casadi.sumsqr(u) *self.dt
+        cost += 1e1 *casadi.sumsqr(u) *self.dt
         cost += 1e1 *casadi.sumsqr(x[3:7] - x0[3:7]) * self.dt
         cost += 1e2 *casadi.sumsqr(x[7 : nq] - x0[7: nq]) *self.dt
 
@@ -222,7 +220,7 @@ contactPattern = [] \
     + [ [ 1,0,0,1 ] ] * walking_steps  \
     + [ [ 0,1,1,0 ] ] * walking_steps 
 
-contactPattern = contactPattern*2
+contactPattern = contactPattern*1
     
 T = len(contactPattern) - 1
     
