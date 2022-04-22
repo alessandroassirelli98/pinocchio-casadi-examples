@@ -299,6 +299,7 @@ try:
             pin.difference(model,x1[:nq],x2[:nq]), x2[nq:]-x1[nq:] ])
 
     for x,xg in zip(dxs,xs_g): opti.set_initial(x, xdiff(x0,xg))
+    for a,ag in zip(acs,acs_g): opti.set_initial(a, ag)
     for u,ug in zip(us,us_g): opti.set_initial(u,ug)
     for f, fg in zip(fs, fs_g):
         [opti.set_initial(f[i], fg[i]) for i in range(len(f)) ]
