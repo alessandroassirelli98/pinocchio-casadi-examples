@@ -22,7 +22,7 @@ path = os.getcwd()
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
 DT = 0.015
-walking_steps = 20
+walking_steps = 8
 mu = 1
 kx = 10
 ky = 10
@@ -47,7 +47,6 @@ try:
 except:
     print("No viewer"  )
 
-# The pinocchio model is what we are really interested by.
 model = robot.model
 cmodel = cpin.Model(robot.model)
 data = model.createData()
@@ -56,6 +55,7 @@ data = model.createData()
 x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
 # quasi static for x0, used for warm-start and regularization
 u0 = np.zeros(robot.nv)
+
 
 contactNames = [ f.name for f in cmodel.frames if "FOOT" in f.name ]
 allContactIds = [ i for i,f in enumerate(cmodel.frames) if "FOOT" in f.name ]
@@ -87,7 +87,8 @@ class CasadiActionModel:
         [self.freeIds.append(idf) for idf in allContactIds if idf not in contactIds ]
 
         self.cdata = cdata = cmodel.createData()
-        nq,nv = cmodel.nq,cmodel.nv
+        self.nq = nq = cmodel.nq
+        self.nv = nv =cmodel.nv
         self.nx = nq+nv
         self.ndx = 2*nv
         self.nu = nv-6
@@ -166,7 +167,6 @@ class CasadiActionModel:
         dt = self.dt
 
         # First split the concatenated forces in 3d vectors.
-        fs = [ fs[3 * i : 3 * i + 3] for i,_ in enumerate(self.contactIds) ]   # split
         # Split q,v from x
         nq,nv = self.cmodel.nq,self.cmodel.nv
         # Formulate tau = [0_6,u]
@@ -178,7 +178,7 @@ class CasadiActionModel:
         xnext = casadi.vertcat(qnext,vnext)
 
         # The acceleration <a> is then constrained to follow ABA.
-        ocp.subject_to( self.acc(x,tau,*fs ) == a )
+        ocp.subject_to( self.acc(x,tau, *fs ) == a )
 
         # Cost functions:
         cost = 0
@@ -221,7 +221,8 @@ contactPattern = [] \
     + [ [ 0,1,1,0 ] ] * walking_steps 
 
 contactPattern = contactPattern*1
-    
+#contactPattern = np.roll(contactPattern, -6, axis=0)
+
 T = len(contactPattern) - 1
     
 def patternToId(pattern):
@@ -240,10 +241,14 @@ runningModels = [ casadiActionModels[contactSequence[t]] for t in range(T) ]
 terminalModel = casadiActionModels[contactSequence[T]]
 
 # Decision variables
-dxs = [ opti.variable(model.ndx) for model in runningModels+[terminalModel] ]     # state variable
-acs = [ opti.variable(model.nv) for model in runningModels ]                      # acceleration
-us =  [ opti.variable(model.nu) for model in runningModels ]                      # control variable
-fs =  [ opti.variable(3*len(model.contactIds) ) for model in runningModels ]      # contact force
+dxs = [ opti.variable(m.ndx) for m in runningModels+[terminalModel] ]     # state variable
+acs = [ opti.variable(m.nv) for m in runningModels ]                      # acceleration
+us =  [ opti.variable(m.nu) for m in runningModels ]                      # control variable
+fs = []
+for m in runningModels:
+    f_tmp = [opti.variable(3) for _ in range(len(m.contactIds)) ]
+    fs.append(f_tmp)
+
 xs =  [ m.integrate(x0,dx) for m,dx in zip(runningModels+[terminalModel],dxs) ]
 
 # Roll out loop, summing the integral cost and defining the shooting constraints.
@@ -268,15 +273,8 @@ for t in range(T):
     opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
     opti.subject_to(opti.bounded(-effort_limit,  us[t], effort_limit ))
     totalcost += rcost
-        
-#opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
-#opti.subject_to(terminalModel.base_translation(xs[T])[2] >= 0.1)
 
-""" for swFoot in terminalModel.freeIds:
-    opti.subject_to(terminalModel.feet[swFoot](xs[t])[2] == terminalModel.feet[swFoot](x0)[2] )
-for swFoot in terminalModel.freeIds:
-    opti.subject_to(terminalModel.vfeet[swFoot](xs[t]) == 0)
- """
+
 opti.minimize(totalcost)
 opti.solver("ipopt") # set numerical backend
 
@@ -293,7 +291,7 @@ try:
     xs_g = guesses['xs']
     us_g = guesses['us']
     acs_g = guesses['acs']
-    #fs_g = guesses['fs']
+    fs_g = guesses['fs']
 
     def xdiff(x1,x2):
         nq = model.nq
@@ -302,9 +300,12 @@ try:
 
     for x,xg in zip(dxs,xs_g): opti.set_initial(x, xdiff(x0,xg))
     for u,ug in zip(us,us_g): opti.set_initial(u,ug)
-    print("Got warm start")
+    for f, fg in zip(fs, fs_g):
+        [opti.set_initial(f[i], fg[i]) for i in range(len(f)) ]
+    print('Got warmstart')
+
 except:
-    print("No warm start")
+    print('No warmstart')
 
 ### SOLVE
 sol = opti.solve()
@@ -315,19 +316,16 @@ xs_sol = np.array([ opti.value(x) for x in xs ])
 q_sol = xs_sol[:,: robot.nq]
 us_sol = np.array([ opti.value(u) for u in us ])
 acs_sol = np.array([ opti.value(a) for a in acs ])
-fsol_filled = []
-for i in range(len(fs)):
-    if(opti.value(fs[i]).any()):
-        fsol_filled += [opti.value(fs[i])]
-    else:
-        fsol_filled += [fsol_filled[0] *0 ]
-fs_sol = [ np.split(f,f.shape[0]//3) for f in fsol_filled ]
+fsol = {name: [] for name in allContactIds}
+fsol_to_ws = []
+for t in range(T):
+    for i, (st_foot, sw_foot) in enumerate(\
+        zip(runningModels[t].contactIds, runningModels[t].freeIds )):
+        fsol[st_foot].append(opti.value(fs[t][i]))
+        fsol[sw_foot].append(np.zeros(3))
+    fsol_to_ws.append([opti.value(fs[t][i]) for i in range(len(fs[t]))])
 
-fs_sol0 = [ np.concatenate([ \
-                            f[runningModels[t].contactIds.index(c) ] if c in runningModels[t].contactIds
-                            else np.zeros(3)
-                            for i,c in enumerate(allContactIds)   ])
-            for t,f in enumerate(fs_sol) ]
+for foot in fsol: fsol[foot] = np.array(fsol[foot])
 
 base_pos_log = []
 [base_pos_log.append(terminalModel.baseTranslation(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
@@ -353,11 +351,12 @@ for foot in feet_vel_log:
 
 
 # Gather forces in world frame
-fs_world = []
-for t,m in enumerate(runningModels):
+model = robot.model
+fs_world = {name: [] for name in allContactIds}
+for t in range(T):
     pin.framesForwardKinematics(model, data, xs_sol[t, : robot.nq])
-    fs_world.append( np.concatenate([  data.oMf[idf].rotation @ fs_sol0[t][3*i:3*i+3] for i,idf in enumerate(m.contactIds) ]) )
-fs_world = np.array(fs_world)
+    [fs_world[foot].append(data.oMf[foot].rotation @ fsol[foot][t]) for foot in fs_world]
+for foot in fs_world: fs_world[foot] = np.array(fs_world[foot])
 
 
 print("TOTAL OPTIMIZATION TIME: ", time() - opt_start_time)
@@ -369,7 +368,7 @@ ha = []
 
 nq,nv = model.nq,model.nv
 # Check that all constraints are respected
-for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fs_sol,xs_sol[1:])):
+for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fsol_to_ws,xs_sol[1:])):
     tau = np.concatenate([np.zeros(6),u])
     q1,v1 = x1[:nq],x1[nq:]
 
@@ -455,7 +454,7 @@ plt.figure(figsize=(12, 6), dpi = 90)
 for i in range(4):
     plt.subplot(2,2,i+1)
     plt.title('Joint velocity of ' + contactNames[i])
-    [plt.plot(t_scale, xs_sol[:, nq + (3*i+jj)]*180/np.pi ) for jj in range(3) ]
+    [plt.plot(t_scale, xs_sol[:, robot.nq + (3*i+jj)]*180/np.pi ) for jj in range(3) ]
     plt.ylabel('Velocity [Deg/s]')
     plt.xlabel('t[s]')
     plt.legend(legend)
@@ -474,26 +473,25 @@ for i in range(4):
     plt.legend(legend)
 plt.draw()
 
-""" legend = ['F_x', 'F_y', 'F_z']
+legend = ['F_x', 'F_y', 'F_z']
 plt.figure(figsize=(12, 6), dpi = 90)
-for i in range(4):
+for i, foot in enumerate(fs_world):
     plt.subplot(2,2,i+1)
     plt.title('Forces on ' + contactNames[i])
-    [plt.plot(t_scale[:-1], fs_world[:, (3*i+jj)]) for jj in range(3) ]
+    [plt.plot(t_scale[:-1], fs_world[foot][:, jj]) for jj in range(3) ]
     plt.ylabel('Force [N]')
     plt.xlabel('t[s]')
     plt.legend(legend)
 plt.draw()
- """
+
 
 plt.show()
 
-plt.show()
 
 np.save(open(path + '/sol.npy', "wb"),
         {
             "xs": xs_sol,
             "us": us_sol,
             "acs": acs_sol,
-            "fs": np.array(fsol_filled)
+            "fs": np.array(fsol_to_ws)
         })
