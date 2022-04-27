@@ -206,6 +206,7 @@ class CasadiActionModel:
             ocp.subject_to(self.feet[sw_foot](x)[2] >= self.feet[sw_foot](x0)[2])
             #cost += 1e5 * casadi.sumsqr(self.feet[sw_foot](x)[2] - step_height) *self.dt
             ocp.subject_to(self.vfeet[sw_foot](x)[0:2] <= k* self.feet[sw_foot](x)[2])
+            #cost += 1e0 * casadi.sumsqr(self.vfeet[sw_foot](x)[0:2])
 
 
         return xnext,cost
@@ -220,7 +221,7 @@ contactPattern = [] \
     + [ [ 1,0,0,1 ] ] * walking_steps  \
     + [ [ 0,1,1,0 ] ] * walking_steps 
 
-contactPattern = contactPattern*1
+contactPattern = contactPattern*4
 #contactPattern = np.roll(contactPattern, -6, axis=0)
 
 T = len(contactPattern) - 1
@@ -274,7 +275,7 @@ for t in range(T):
     opti.subject_to(opti.bounded(-effort_limit,  us[t], effort_limit ))
     totalcost += rcost
 
-
+opti.subject_to(xs[T][cmodel.nq :] == 0)
 opti.minimize(totalcost)
 opti.solver("ipopt") # set numerical backend
 
