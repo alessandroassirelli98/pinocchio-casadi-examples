@@ -16,24 +16,28 @@ import matplotlib.pyplot as plt
 from pinocchio.visualize import GepettoVisualizer
 from time import time
 import os
+
 plt.style.use('seaborn')
 path = os.getcwd()
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
 DT = 0.015
-walking_steps = 8
+walking_steps = 12
 mu = 1
 kx = 10
 ky = 10
 k = np.array([kx, ky])
-step_height = 0.05
 v_lin_target = np.array([1, 0, 0])
 v_ang_target = np.array([0, 0, 0])
 
 lin_vel_weight = np.array([10, 10, 10])
 ang_vel_weight = np.array([10, 10, 10])
-force_reg_weight = 1e-1
+force_reg_weight = 1e-2
+control_weight = 1e1
+base_reg_cost = 1e1
+joints_reg_cost = 1e2
+sw_feet_reg_cost = 1e1
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -54,7 +58,7 @@ data = model.createData()
 # Initial config, also used for warm start
 x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
 # quasi static for x0, used for warm-start and regularization
-u0 = np.zeros(robot.nv)
+u0 = np.zeros(robot.nv - 6)
 
 
 contactNames = [ f.name for f in cmodel.frames if "FOOT" in f.name ]
@@ -158,7 +162,25 @@ class CasadiActionModel:
                                        [cx,ca],[cpin.getFrameClassicalAcceleration( cmodel,cdata,idf,pin.LOCAL_WORLD_ALIGNED ).linear])
                        for idf in allContactIds}
 
-        
+    def cost(self, x, u, fs):
+        cost = 0
+        cost += force_reg_weight *casadi.sumsqr(u) *self.dt
+        cost += base_reg_cost *casadi.sumsqr(x[3:7] - x0[3:7]) * self.dt
+        cost += joints_reg_cost *casadi.sumsqr(x[7 : self.cmodel.nq] - x0[7: self.cmodel.nq]) *self.dt
+
+        for i, stFoot in enumerate(self.contactIds):
+            # Friction cone
+            R = self.Rfeet[stFoot](x)
+            f = fs[i]
+            fw = R @ f
+            cost += force_reg_weight * casadi.sumsqr(fw[2] - robotweight/len(self.contactIds)) * self.dt
+        for sw_foot in self.freeIds:
+            cost += sw_feet_reg_cost * casadi.sumsqr(self.vfeet[sw_foot](x)[0:2]) * self.dt
+
+        cost += casadi.sumsqr(lin_vel_weight*(self.baseVelocityLin(x) - v_lin_target)) * self.dt
+        cost += casadi.sumsqr(ang_vel_weight*(self.baseVelocityAng(x) - v_ang_target)) * self.dt
+        return cost
+
     def calc(self,x, u, a, fs, ocp):
         '''
         This function return xnext,cost
@@ -181,15 +203,8 @@ class CasadiActionModel:
         ocp.subject_to( self.acc(x,tau, *fs ) == a )
 
         # Cost functions:
-        cost = 0
-        cost += 1e1 *casadi.sumsqr(u) *self.dt
-        cost += 1e1 *casadi.sumsqr(x[3:7] - x0[3:7]) * self.dt
-        cost += 1e2 *casadi.sumsqr(x[7 : nq] - x0[7: nq]) *self.dt
+        cost = self.cost(x, u, fs)
 
-        #cost += casadi.sumsqr(position_weight*(self.baseTranslation(x) - self.baseTranslation(x0))) *self.dt
-        cost += casadi.sumsqr(lin_vel_weight*(self.baseVelocityLin(x) - v_lin_target)) * self.dt
-        cost += casadi.sumsqr(ang_vel_weight*(self.baseVelocityAng(x) - v_ang_target)) * self.dt
-        
         # Contact constraints
         for i, stFoot in enumerate(self.contactIds):
             ocp.subject_to(self.afeet[stFoot](x,a) == 0) # stiff contact
@@ -200,15 +215,13 @@ class CasadiActionModel:
             fw = R @ f
             ocp.subject_to(fw[2] >= 0)
             ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))
-            cost += force_reg_weight * casadi.sumsqr(fw[2] - robotweight/len(self.contactIds)) * self.dt
+            
         
         for sw_foot in self.freeIds:
             ocp.subject_to(self.feet[sw_foot](x)[2] >= self.feet[sw_foot](x0)[2])
             #cost += 1e5 * casadi.sumsqr(self.feet[sw_foot](x)[2] - step_height) *self.dt
             ocp.subject_to(self.vfeet[sw_foot](x)[0:2] <= k* self.feet[sw_foot](x)[2])
-            #cost += 1e0 * casadi.sumsqr(self.vfeet[sw_foot](x)[0:2])
-
-
+            
         return xnext,cost
 
 
@@ -260,7 +273,6 @@ for t in range(T):
     print(contactSequence[t])
 
     if (contactSequence[t] != contactSequence [t-1] and t >=1): # If it is landing
-        xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti)
         for stFoot in runningModels[t].contactIds:
             opti.subject_to(runningModels[t].feet[stFoot](xs[t])[2] == runningModels[t].feet[stFoot](x0)[2] )
         for stFoot in runningModels[t].contactIds:
@@ -268,9 +280,7 @@ for t in range(T):
 
         print('Landing on ', str(runningModels[t].contactIds)) 
 
-    else:
-        xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti)
-
+    xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti)
     opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
     opti.subject_to(opti.bounded(-effort_limit,  us[t], effort_limit ))
     totalcost += rcost
@@ -439,8 +449,6 @@ for i in range(3):
         plt.title('Foot position on ' + legend[i])
         plt.plot(t_scale, feet_log[foot][:, i])
         plt.legend(contactNames)
-        if i == 2:
-            plt.axhline(y=step_height, color= 'black', linestyle = '--')
         
 legend = ['x', 'y', 'z']
 plt.figure(figsize=(12, 6), dpi = 90)

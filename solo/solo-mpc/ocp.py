@@ -57,6 +57,7 @@ class OCP():
         except:
             print("No warm start")
     
+    
     def get_results(self):
         xs_sol = np.array([ self.opti.value(x) for x in self.xs ])
         us_sol = np.array([ self.opti.value(u) for u in self.us ])
@@ -119,7 +120,8 @@ class OCP():
         if (contactSequence[T] != contactSequence[T-1]): # If it is landing
             print('Landing on ', str(terminalModel.contactIds)) 
             terminalModel.constraint_landing_feet(xs[t], opti, x_ref)
-            
+
+        opti.subject_to(xs[T][terminalModel.nq :] == 0)
         opti.minimize(totalcost)
         opti.solver("ipopt") # set numerical backend
 
@@ -258,6 +260,7 @@ class ShootingNode():
         self.control_cost(u, u_ref)
         self.body_reg_cost(x=x, x_ref=x_ref)
         self.target_cost(x=x, v_lin_target=v_lin_target, v_ang_target=v_ang_target)
+        self.sw_feet_cost(x)
 
         return xnext, self.cost
 
@@ -308,3 +311,8 @@ class ShootingNode():
     def target_cost(self, x, v_lin_target, v_ang_target):
         self.cost += casadi.sumsqr(conf.lin_vel_weight*(self.baseVelocityLin(x) - v_lin_target)) * self.dt
         self.cost += casadi.sumsqr(conf.ang_vel_weight*(self.baseVelocityAng(x) - v_ang_target)) * self.dt
+
+    def sw_feet_cost(self, x):
+        for sw_foot in self.freeIds:
+            self.cost += conf.sw_feet_reg_cost * casadi.sumsqr(self.vfeet[sw_foot](x)[0:2]) *self.dt
+        

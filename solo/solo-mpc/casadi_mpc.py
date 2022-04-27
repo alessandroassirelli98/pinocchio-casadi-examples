@@ -17,8 +17,8 @@ robot = robex.load('solo12')
 nq, nv = robot.model.nq, robot.model.nv
 x0 = np.concatenate([robot.q0, np.zeros(nv)])
 u0 =  0*np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
-               0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
-               0.25720939, -0.51441314])  ### quasi-static for x0
+                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
+                0.25720939, -0.51441314])  ### quasi-static for x0
 
 try:
     viz = GepettoVisualizer(robot.model,robot.collision_model,robot.visual_model)
@@ -60,18 +60,16 @@ for i in range(conf.horizon):
 
     #for foot in allContactIds: feet_log[foot] += [ocp.feet_log[foot][0, :]] 
     x_mpc.append(x[1])
+
 print( 'Total MPC time: ', time.time() - start_time, '\n\n')
 
 x_mpc = np.array(x_mpc)
-q_mpc = x_mpc[:, :nq]
-
-#for foot in allContactIds: feet_log[foot] = np.array(feet_log[foot])
-
-t_scale = np.linspace(0, (ocp.T+1)*dt, ocp.T+1)
-
+q_sol = x_mpc[:, :nq]
 
 
 ### --------------------------------------------------- ###
+
+t_scale = np.linspace(0, (ocp.T+1)*dt, ocp.T+1)
 
 """ legend = ['x', 'y', 'z']
 plt.figure(figsize=(12, 6), dpi = 90)
