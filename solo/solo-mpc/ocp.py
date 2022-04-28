@@ -57,7 +57,7 @@ class OCP():
         except:
             print("No warm start")
     
-    
+
     def get_results(self):
         xs_sol = np.array([ self.opti.value(x) for x in self.xs ])
         us_sol = np.array([ self.opti.value(u) for u in self.us ])
@@ -93,7 +93,7 @@ class OCP():
         self.us = us =  [ opti.variable(model.nu) for model in runningModels ]
         self.xs = xs =  [ m.integrate(x0,dx) for m,dx in zip(runningModels+[terminalModel],dxs) ]
         self.fs = fs = []
-        for m in runningModels:
+        for m in runningModels:     
             f_tmp = [opti.variable(3) for _ in range(len(m.contactIds)) ]
             fs.append(f_tmp)
         self.fs = fs
@@ -103,15 +103,15 @@ class OCP():
         for t in range(T):
             print(contactSequence[t])
             print(t)
+            runningModels[t].init(xs[t], acs[t], us[t], fs[t], opti)
 
             if (contactSequence[t] != contactSequence[t-1] and t >= 1): # If it is landing
                 print('Landing on ', str(runningModels[t].contactIds)) 
-                runningModels[t].constraint_landing_feet(xs[t], opti, x_ref)
+                runningModels[t].constraint_landing_feet(x_ref)
 
-            xnext,rcost = runningModels[t].calc(x=xs[t], u=us[t], a=acs[t],\
-                                                    fs=fs[t], ocp=opti, x_ref=x_ref,\
-                                                    u_ref=u_ref, v_lin_target=v_lin_target, \
-                                                    v_ang_target=v_ang_target)
+            xnext,rcost = runningModels[t].calc(x_ref=x_ref,u_ref=u_ref, \
+                                                v_lin_target=v_lin_target, \
+                                                v_ang_target=v_ang_target)
 
             opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*runningModels[t].nv) )  # x' = f(x,u)
             opti.subject_to(opti.bounded(-self.effort_limit,  us[t], self.effort_limit ))
@@ -119,7 +119,7 @@ class OCP():
     
         if (contactSequence[T] != contactSequence[T-1]): # If it is landing
             print('Landing on ', str(terminalModel.contactIds)) 
-            terminalModel.constraint_landing_feet(xs[t], opti, x_ref)
+            terminalModel.constraint_landing_feet(x_ref)
 
         opti.subject_to(xs[T][terminalModel.nq :] == 0)
         opti.minimize(totalcost)
@@ -229,90 +229,102 @@ class ShootingNode():
                                                 pin.LOCAL_WORLD_ALIGNED ).linear])
                     for idf in allContactIds}
 
+    def init(self, x, a, u, fs, ocp):
+        self.x = x
+        self.a = a
+        self.u = u
+        self.tau = casadi.vertcat( np.zeros(6), u )
+        self.fs = fs
+        self.ocp = ocp
         
-    def calc(self,x, u, a, fs, ocp, x_ref, u_ref, v_lin_target, v_ang_target):
+    def calc(self, x_ref, u_ref, v_lin_target, v_ang_target):
         '''
         This function return xnext,cost
         '''
 
         dt = self.dt
-        self.ocp = ocp
-
+        
         # First split the concatenated forces in 3d vectors.
-        # Split q,v from x
-        nq = self.nq
-        # Formulate tau = [0_6,u]
-        tau = casadi.vertcat( np.zeros(6), u )
+        nq = self.nq     
 
         # Euler integration, using directly the acceleration <a> introduced as a slack variable.
-        vnext = x[nq:] + a*dt
-        qnext = self.integrate_q(x[:nq], vnext*dt)
+        vnext = self.x[nq:] + self.a*dt
+        qnext = self.integrate_q(self.x[:nq], vnext*dt)
         xnext = casadi.vertcat(qnext,vnext)
 
         # Constraints
-        self.constraint_standing_feet(x=x, a=a, f=fs)
-        self.constraint_swing_feet(x=x, x_ref=x_ref, k = conf.k)
-        self.constraint_dynamics(x=x, a=a, tau=tau, f=fs)
+        self.constraint_standing_feet()
+        self.constraint_swing_feet(x_ref=x_ref, k = conf.k)
+        self.constraint_dynamics()
 
         # Cost functions:
         self.cost = 0
-        self.force_reg_cost(x, fs)
-        self.control_cost(u, u_ref)
-        self.body_reg_cost(x=x, x_ref=x_ref)
-        self.target_cost(x=x, v_lin_target=v_lin_target, v_ang_target=v_ang_target)
-        self.sw_feet_cost(x)
+        self.force_reg_cost()
+        self.control_cost(u_ref)
+        self.body_reg_cost(x_ref=x_ref)
+        self.target_cost(v_lin_target=v_lin_target, v_ang_target=v_ang_target)
+        self.sw_feet_cost()
 
         return xnext, self.cost
 
 
 
-    def constraint_landing_feet(self, x, ocp, x_ref):
+    def constraint_landing_feet(self, x_ref):
         for stFoot in self.contactIds:
-            ocp.subject_to(self.feet[stFoot](x)[2] ==  \
+            self.ocp.subject_to(self.feet[stFoot](self.x)[2] ==  \
                             self.feet[stFoot](x_ref)[2] )
-            ocp.subject_to(self.vfeet[stFoot](x) == 0)
+            self.ocp.subject_to(self.vfeet[stFoot](self.x) == 0)
     
-    def constraint_standing_feet(self, x, a, f):
+    def constraint_standing_feet(self):
         for i, stFoot in enumerate(self.contactIds):
-            self.ocp.subject_to(self.afeet[stFoot](x,a) == 0) # stiff contact
+            self.ocp.subject_to(self.afeet[stFoot](self.x, self.a) == 0) # stiff contact
             
             # Friction cone
-            R = self.Rfeet[stFoot](x)
-            f_ = f[i]
+            R = self.Rfeet[stFoot](self.x)
+            f_ = self.fs[i]
             fw = R @ f_
             self.ocp.subject_to(fw[2] >= 0)
             self.ocp.subject_to(conf.mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))
 
-    def constraint_dynamics(self, x, a, tau, f):
-        self.ocp.subject_to( self.acc(x,tau, *f ) == a )
+    def constraint_dynamics(self):
+        self.ocp.subject_to( self.acc(self.x, self.tau, *self.fs ) == self.a )
 
-    def constraint_swing_feet(self, x, x_ref, k):
+    def constraint_swing_feet(self, x_ref, k):
         for sw_foot in self.freeIds:
-            self.ocp.subject_to(self.feet[sw_foot](x)[2] >= self.feet[sw_foot](x_ref)[2])
+            self.ocp.subject_to(self.feet[sw_foot](self.x)[2] >= self.feet[sw_foot](x_ref)[2])
             #cost += 1e5 * casadi.sumsqr(self.feet[sw_foot](x)[2] - step_height) *self.dt
-            self.ocp.subject_to(self.vfeet[sw_foot](x)[0:2] <= k* self.feet[sw_foot](x)[2])
+            self.ocp.subject_to(self.vfeet[sw_foot](self.x)[0:2] <= k* self.feet[sw_foot](self.x)[2])
 
-    def force_reg_cost(self, x, f):
+    def force_reg_cost(self):
         for i, stFoot in enumerate(self.contactIds):
-            R = self.Rfeet[stFoot](x)
-            f_ = f[i]
+            R = self.Rfeet[stFoot](self.x)
+            f_ = self.fs[i]
             fw = R @ f_
             self.cost += conf.force_reg_weight * casadi.sumsqr(fw[2] - \
                                                 self.robotweight/len(self.contactIds)) * self.dt
     
-    def control_cost(self, u, u_ref):
-        self.cost += conf.control_weight *casadi.sumsqr(u - u_ref) *self.dt
+    def control_cost(self, u_ref):
+        self.cost += conf.control_weight *casadi.sumsqr(self.u - u_ref) *self.dt
 
-    def body_reg_cost(self, x, x_ref):
-        self.cost += conf.base_reg_cost * casadi.sumsqr(x[3:7] - x_ref[3:7]) * self.dt
+    def body_reg_cost(self, x_ref):
+        self.cost += conf.base_reg_cost * casadi.sumsqr(self.x[3:7] - x_ref[3:7]) * self.dt
         #self.cost += conf.base_reg_cost * casadi.sumsqr( self.log3(self.baseRotation(x), self.baseRotation(x_ref)) ) * self.dt
-        self.cost += conf.joints_reg_cost * casadi.sumsqr(x[7 : self.nq] - x_ref[7: self.nq]) *self.dt
+        self.cost += conf.joints_reg_cost * casadi.sumsqr(self.x[7 : self.nq] - x_ref[7: self.nq]) *self.dt
 
-    def target_cost(self, x, v_lin_target, v_ang_target):
-        self.cost += casadi.sumsqr(conf.lin_vel_weight*(self.baseVelocityLin(x) - v_lin_target)) * self.dt
-        self.cost += casadi.sumsqr(conf.ang_vel_weight*(self.baseVelocityAng(x) - v_ang_target)) * self.dt
+    def target_cost(self, v_lin_target, v_ang_target):
+        self.cost += casadi.sumsqr(conf.lin_vel_weight*(self.baseVelocityLin(self.x) - v_lin_target)) * self.dt
+        self.cost += casadi.sumsqr(conf.ang_vel_weight*(self.baseVelocityAng(self.x) - v_ang_target)) * self.dt
 
-    def sw_feet_cost(self, x):
+    def sw_feet_cost(self):
         for sw_foot in self.freeIds:
-            self.cost += conf.sw_feet_reg_cost * casadi.sumsqr(self.vfeet[sw_foot](x)[0:2]) *self.dt
-        
+            self.cost += conf.sw_feet_reg_cost * casadi.sumsqr(self.vfeet[sw_foot](self.x)[0:2]) *self.dt
+    
+    def compute_cost(self, x_ref, u_ref, v_lin_target, v_ang_target):
+        self.cost = 0
+        self.force_reg_cost()
+        self.control_cost(u_ref)
+        self.body_reg_cost(x_ref=x_ref)
+        self.target_cost(v_lin_target=v_lin_target, v_ang_target=v_ang_target)
+        self.sw_feet_cost()
+
+        return self.cost

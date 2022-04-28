@@ -19,7 +19,7 @@ x0 = np.concatenate([robot.q0, np.zeros(nv)])
 u0 =  0*np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
                 0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
                 0.25720939, -0.51441314])  ### quasi-static for x0
-
+fs0 = [np.ones(3)*0, np.ones(3) *0]
 try:
     viz = GepettoVisualizer(robot.model,robot.collision_model,robot.visual_model)
     viz.initViewer()
@@ -47,7 +47,7 @@ feet_log = {i:[] for i in allContactIds}
 start_time = time.time()
 for i in range(conf.horizon):
     print('Iteration ', str(i))
-    gait = np.roll(gait, -1, axis=0)
+    #gait = np.roll(gait, -1, axis=0)
     ocp.solve(gait=gait, x0=x_mpc[-1], x_ref=x0, u_ref = u0, v_lin_target=v_lin_target, \
                     v_ang_target=v_ang_target, guess=warmstart)
     print('OCP time: ', ocp.iterationTime)
@@ -65,6 +65,7 @@ print( 'Total MPC time: ', time.time() - start_time, '\n\n')
 
 x_mpc = np.array(x_mpc)
 q_sol = x_mpc[:, :nq]
+
 
 
 ### --------------------------------------------------- ###
