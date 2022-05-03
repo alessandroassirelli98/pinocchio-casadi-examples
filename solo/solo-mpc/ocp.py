@@ -74,9 +74,24 @@ class OCP():
 
         return xs_sol, acs_sol, us_sol, fsol_to_ws, fsol
 
+    def get_feet_position(self, xs_sol):
+        feet_log = {i:[] for i in self.allContactIds}
+        for foot in feet_log:
+            tmp = []
+            for i in range(len(xs_sol)):
+                tmp += [ self.terminalModel.feet[foot](xs_sol[i]).full()[:, 0] ]
+            feet_log[foot] = np.array(tmp)
+        
+        return feet_log
+
+    def get_base_log(self, xs_sol):
+        base_pos_log = []
+        [base_pos_log.append(self.terminalModel.baseTranslation(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
+        base_pos_log = np.array(base_pos_log)
+        return base_pos_log
+
 
     def solve(self, gait, x0, x_ref, u_ref, v_lin_target, v_ang_target, guess=None):
-
         self.x0 = x0
 
         contactSequence = [ self.patternToId(p) for p in gait]
@@ -102,7 +117,6 @@ class OCP():
         opti.subject_to(dxs[0] == 0)
         for t in range(T):
             print(contactSequence[t])
-            print(t)
             runningModels[t].init(xs[t], acs[t], us[t], fs[t], opti)
 
             if (contactSequence[t] != contactSequence[t-1] and t >= 1): # If it is landing
@@ -123,13 +137,25 @@ class OCP():
 
         opti.subject_to(xs[T][terminalModel.nq :] == 0)
         opti.minimize(totalcost)
-        opti.solver("ipopt") # set numerical backend
+
+        p_opts = {}
+        s_opts = {"tol": 1e-4,
+            #"acceptable_tol":1e-4,
+            #"max_iter": 21,
+            #"compl_inf_tol": 1e-2,
+            #"constr_viol_tol": 1e-2
+            #"resto_failure_feasibility_threshold": 1
+            #"linear_solver": "ma57"
+            }
+
+        opti.solver("ipopt",p_opts,
+                    s_opts)
 
         self.warmstart(guess)
 
         ### SOLVE
         start_time = time() 
-        opti.solve()
+        opti.solve_limited()
         self.iterationTime = time() - start_time
 
 
