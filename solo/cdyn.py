@@ -118,7 +118,9 @@ class CasadiActionModel:
 
         self.feet = [ casadi.Function('foot'+cmodel.frames[idf].name,
                                       [cx],[self.cdata.oMf[idf].translation]) for idf in contactIds ]
-
+                                      
+        self.Rfeet = [ casadi.Function('Rfoot'+cmodel.frames[idf].name,
+                                       [cx],[self.cdata.oMf[idf].rotation]) for idf in contactIds ]
         # integrate(x,dx)
         self.integrate = casadi.Function('plus', [cx,cdx],
                                         [ casadi.vertcat(cpin.integrate(self.cmodel,cx[:nq],cdx[:nv]),
@@ -188,9 +190,18 @@ xs = [ m.integrate(x0,dx) for m,dx in zip(runningModels+[terminalModel],dxs) ]
 # Roll out loop, summing the integral cost and defining the shooting constraints.
 totalcost = 0
 opti.subject_to(dxs[0] == 0)
+mu = 1
 for t in range(T):
     xnext,rcost = runningModels[t].calc(xs[t], us[t])
     opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
+    forces = [force(xs[t], casadi.vertcat(np.zeros(6), us[t])) for force in runningModels[t].forces]
+    for f,R in zip(forces, runningModels[t].Rfeet):   # Cone constrains (flat terrain)
+        fw = R(xs[t]) @ f
+        opti.subject_to(fw[2] >= 0)
+        opti.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))
+        #ocp.subject_to(mu*fw[2] >= casadi.sqrt(fw[0]**2) )     # For linear constraints
+        #ocp.subject_to(mu*fw[2] >= casadi.sqrt(fw[1]**2) )     # For linear constraints
+
     totalcost += rcost
 
 opti.subject_to( xs[T][cmodel.nq:] == 0 )  # v_T = 0

@@ -58,7 +58,9 @@ data = model.createData()
 # Initial config, also used for warm start
 x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
 # quasi static for x0, used for warm-start and regularization
-u0 = np.zeros(robot.nv - 6)
+u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
+                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
+                0.25720939, -0.51441314]) 
 
 
 contactNames = [ f.name for f in cmodel.frames if "FOOT" in f.name ]
@@ -287,7 +289,19 @@ for t in range(T):
 
 opti.subject_to(xs[T][cmodel.nq :] == 0)
 opti.minimize(totalcost)
-opti.solver("ipopt") # set numerical backend
+
+p_opts = {}
+s_opts = {"tol": 1e-2,
+    "acceptable_tol":1e-2,
+    #"max_iter": 21,
+    "compl_inf_tol": 1e-2,
+    "constr_viol_tol": 1e-2
+    #"resto_failure_feasibility_threshold": 1
+    #"linear_solver": "ma57"
+    }
+opti.solver("ipopt",p_opts,
+                    s_opts)
+
 
 # Callback to store the history of the cost
 cost_log = []
@@ -320,7 +334,7 @@ except:
     print('No warmstart')
 
 ### SOLVE
-sol = opti.solve()
+sol = opti.solve_limited()
 
 # Get optimization variables
 dxs_sol = np.array([ opti.value(x) for x in dxs ])
@@ -413,6 +427,7 @@ for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fsol_to_ws
 
 viz.play(q_sol.T, terminalModel.dt)
 t_scale = np.linspace(0, (T+1)*DT, T+1)
+
 
 plt.figure(figsize=(12, 6), dpi = 90)
 plt.subplot(1,2,1)
