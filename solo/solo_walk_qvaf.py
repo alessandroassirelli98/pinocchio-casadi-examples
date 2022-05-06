@@ -57,6 +57,7 @@ data = model.createData()
 
 # Initial config, also used for warm start
 x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
+x0[3:7] = np.array([0,0,1,0])
 # quasi static for x0, used for warm-start and regularization
 u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
                 0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
@@ -143,12 +144,13 @@ class CasadiActionModel:
 
         cpin.forwardKinematics(cmodel,cdata,cx[:nq],cx[nq:],ca)
         cpin.updateFramePlacements(cmodel,cdata)
+        reference_frame = pin.LOCAL
         # Base link position
         self.baseTranslation = casadi.Function('base_translation', [cx], [ cdata.oMf[baseId].translation ])
         self.baseRotation = casadi.Function('base_rotation', [cx], [ cdata.oMf[baseId].rotation ])
         # Base velocity
-        self.baseVelocityLin = casadi.Function('base_velocity_linear', [cx], [cpin.getFrameVelocity( cmodel,cdata,baseId,pin.LOCAL_WORLD_ALIGNED ).linear])
-        self.baseVelocityAng = casadi.Function('base_velocity_angular', [cx], [cpin.getFrameVelocity( cmodel,cdata,baseId,pin.LOCAL_WORLD_ALIGNED ).angular])
+        self.baseVelocityLin = casadi.Function('base_velocity_linear', [cx], [cpin.getFrameVelocity( cmodel,cdata,baseId,reference_frame).linear])
+        self.baseVelocityAng = casadi.Function('base_velocity_angular', [cx], [cpin.getFrameVelocity( cmodel,cdata,baseId,reference_frame).angular])
         # feet[c](x) =  position of the foot <c> at configuration q=x[:nq]
         self.feet = {idf : casadi.Function('foot'+cmodel.frames[idf].name,
                                      [cx], [cdata.oMf[idf].translation]) for idf in allContactIds }
