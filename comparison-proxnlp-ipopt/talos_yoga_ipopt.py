@@ -145,7 +145,7 @@ opti.subject_to(opti.bounded(0.7, com_position(qs)[2], 0.9)) """
 
 # Standing foot
 opti.subject_to(rf_position(qs) - rf_position(q0) == 0)
-opti.subject_to(rf_rotation(qs) - rf_rotation(q0) == 0)
+opti.subject_to(log(rf_rotation(qs), rf_rotation(q0)) == 0)
 
 """ # Free foot
 opti.subject_to(lf_position(qs)[2] >= 0.4)
