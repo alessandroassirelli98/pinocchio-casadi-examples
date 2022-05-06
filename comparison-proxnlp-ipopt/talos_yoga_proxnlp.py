@@ -167,7 +167,7 @@ eq_constr_fun = CasadiFunction(pb_space.nx, pb_space.ndx, eq_expr, Dxs, use_hess
 
 # Free foot
 ineq_fun_expr = []
-ineq_fun_expr.append(-lf_position(qs)[2] + 0.12)
+ineq_fun_expr.append(-lf_position(qs)[2] + 0.2)
 ineq_expr = casadi.vertcat(*ineq_fun_expr)
 ineq_constr_fun = CasadiFunction(pb_space.nx, pb_space.ndx, ineq_expr, Dxs, use_hessian=False)
 

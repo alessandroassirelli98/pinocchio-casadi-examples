@@ -44,11 +44,13 @@ except:
 q0 = robot.q0
 
 nq = cmodel.nq
-nDq = cmodel.nv
+nv = cmodel.nv
+nx = nv*2
 
 
 cq = casadi.SX.sym('cq', nq, 1)
-cDq = casadi.SX.sym('cx', nDq, 1)
+cq_ref = casadi.SX.sym('cq', nq, 1)
+cDq = casadi.SX.sym('cx', nv, 1)
 R = casadi.SX.sym('R', 3, 3)
 R_ref = casadi.SX.sym('R_ref', 3, 3)
 
@@ -67,6 +69,7 @@ IDX_RE = cmodel.getFrameId('arm_right_4_joint')
 # So pinocchio.integrate(config, Dq)
 integrate = casadi.Function('integrate', [cq, cDq], [ cpin.integrate(cmodel,cq, cDq) ] )
 
+difference = casadi.Function('difference', [cq, cq_ref], [cpin.difference(cmodel, cq, cq_ref)])
 # Casadi function to map joints configuration to COM position                                                        
 com_position = casadi.Function('com', [cq], [cpin.centerOfMass(cmodel, cdata, cq)] )
 
@@ -101,10 +104,10 @@ log = casadi.Function('log', [R, R_ref], [cpin.log3(R.T @ R_ref)])
 ### OPTIMIZATION PROBLEM
 
 # Defining weights
-parallel_cost = 1e3
-distance_cost = 1e3
-straightness_body_cost = 1e3
-elbow_distance_cost = 1e1
+parallel_cost = 0.1
+distance_cost = 2.5
+straightness_body_cost = 1
+elbow_distance_cost = 1
 distance_btw_hands = 0.3
 
 opti = casadi.Opti()
@@ -113,18 +116,18 @@ opti = casadi.Opti()
 # q = q + Dq, where the plus sign is intended as an integrator (because nq is different from nv)
 # It is also possible to optimize directly in q, but in that case a constraint must be added in order to have 
 # the norm squared of the quaternions = 1
-Dqs = opti.variable(nDq)
-qs = integrate(q0, Dqs)
+Dxs = opti.variable(nx)
+qs = integrate(q0, Dxs[: nv])
 
-cost = casadi.sumsqr(qs - q0)
-cost += casadi.sumsqr(com_position(qs)[0] - 1)
+cost = casadi.sumsqr(difference(qs, q0))  * 0.1
 
-opti.minimize(cost)
-""" # Distance between the hands
+# Distance between the hands
 cost += distance_cost * casadi.sumsqr(lg_position(qs) - rg_position(qs) 
                                      - np.array([0, distance_btw_hands, 0]))  
 
-# Cost on parallelism of the two hands
+opti.minimize(cost)
+
+"""# Cost on parallelism of the two hands
 r_ref = pin.utils.rotate('x', 3.14 / 2) # orientation target
 cost += parallel_cost * casadi.sumsqr(log(rg_rotation(qs), r_ref))
 r_ref = pin.utils.rotate('x', -3.14 / 2) # orientation target
@@ -147,9 +150,9 @@ opti.subject_to(opti.bounded(0.7, com_position(qs)[2], 0.9)) """
 opti.subject_to(rf_position(qs) - rf_position(q0) == 0)
 opti.subject_to(log(rf_rotation(qs), rf_rotation(q0)) == 0)
 
-""" # Free foot
-opti.subject_to(lf_position(qs)[2] >= 0.4)
-opti.subject_to(opti.bounded(0.05, lf_position(qs)[0:2], 0.1))
+# Free foot
+opti.subject_to(lf_position(qs)[2] >= 0.2)
+"""opti.subject_to(opti.bounded(0.05, lf_position(qs)[0:2], 0.1))
 
 r_ref = pin.utils.rotate('z', 3.14 / 2) @ pin.utils.rotate('y', 3.14 / 2) # orientation target
 opti.subject_to(opti.bounded(-0.0, lf_rotation(qs) - r_ref, 0.0))
@@ -163,7 +166,7 @@ opti.subject_to(opti.bounded(-distance_btw_hands/2, rg_position(qs)[1], 0)) """
 ### SOLVE
 def call(i, nCalled=10):
     if i % nCalled == 0:
-       qs_tmp = integrate(q0, opti.debug.value(Dqs)).full()
+       qs_tmp = integrate(q0, opti.debug.value(Dxs)[:nv]).full()
        viz.display(qs_tmp)
        time.sleep(0.2)
 
@@ -174,11 +177,10 @@ def call(i, nCalled=10):
 opti.callback(call)
 
 opti.solver('ipopt')
-opti.set_initial(Dqs, np.zeros(nDq)) # This is optional since by default it's initialized with zeros
 opti.solve()
 
 print("Final cost is: ", opti.value(cost))
-q_sol = integrate(q0, opti.value(Dqs)).full()
+q_sol = integrate(q0, opti.value(Dxs)[:nv]).full()
 
 ### VISUALIZATION
 
