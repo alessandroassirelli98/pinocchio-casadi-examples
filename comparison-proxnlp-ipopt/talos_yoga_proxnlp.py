@@ -255,8 +255,8 @@ workspace = proxnlp.Workspace(pb_space.nx, pb_space.ndx, prob)
 results = proxnlp.Results(pb_space.nx, prob)
 
 callback = proxnlp.helpers.HistoryCallback()
-tol = 1e-5
-rho_init = 1e-8
+tol = 1e-6
+rho_init = 1e-10
 mu_init = 0.01
 
 solver = proxnlp.Solver(
