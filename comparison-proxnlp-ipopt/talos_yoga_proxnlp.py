@@ -329,3 +329,9 @@ plt.legend(['dual', 'primal'])
 plt.draw()
 
 plt.show()
+
+arr = viewer.get_image()
+plt.subplots_adjust(0, 0, 1, 1)
+plt.imshow(arr)
+plt.axis("off")
+plt.show()
