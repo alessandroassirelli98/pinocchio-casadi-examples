@@ -104,11 +104,14 @@ log = casadi.Function('log', [R, R_ref], [cpin.log3(R.T @ R_ref)])
 ### OPTIMIZATION PROBLEM
 
 # Defining weights
-parallel_cost = 0.1
-distance_cost = 2.5
-straightness_body_cost = 1
-elbow_distance_cost = 1
-distance_btw_hands = 0.3
+parallel_cost = 1
+distance_cost = 10
+straightness_body_cost = 2.5
+elbow_distance_cost = 2
+distance_btw_hands = np.array([0, 0.03, 0])
+left_foot_cost = 0
+
+left_foot_target_z = 0.5
 
 opti = casadi.Opti()
 
@@ -119,47 +122,47 @@ opti = casadi.Opti()
 Dxs = opti.variable(nx)
 qs = integrate(q0, Dxs[: nv])
 
-cost = casadi.sumsqr(difference(qs, q0))  * 0.1
+# Cost
+cost = 0.
+cost += casadi.sumsqr(difference(qs, q0)) * 0.1
 
 # Distance between the hands
 cost += distance_cost * casadi.sumsqr(lg_position(qs) - rg_position(qs) 
-                                     - np.array([0, distance_btw_hands, 0]))  
-
-opti.minimize(cost)
-
-"""# Cost on parallelism of the two hands
-r_ref = pin.utils.rotate('x', 3.14 / 2) # orientation target
-cost += parallel_cost * casadi.sumsqr(log(rg_rotation(qs), r_ref))
-r_ref = pin.utils.rotate('x', -3.14 / 2) # orientation target
-cost += parallel_cost * casadi.sumsqr(log(lg_rotation(qs), r_ref))
-
-# Body in a straight position
-cost += straightness_body_cost * casadi.sumsqr(log(base_rotation(qs), base_rotation(q0)))
+                                     - distance_btw_hands)  
 
 cost +=  elbow_distance_cost *casadi.sumsqr(le_translation(qs)[1] - 2) \
         + elbow_distance_cost *casadi.sumsqr(re_translation(qs)[1] + 2)
 
+# Cost on parallelism of the two hands
+r_ref = pin.utils.rotate('x', 3.14 / 2) # orientation target
+cost += parallel_cost * casadi.sumsqr(log(rg_rotation(qs), r_ref))
 
+r_ref = pin.utils.rotate('x', -3.14 / 2) # orientation target
+cost += parallel_cost * casadi.sumsqr(log(lg_rotation(qs), r_ref))
+
+#straightness of the body
+cost += straightness_body_cost * casadi.sumsqr(log(base_rotation(qs), base_rotation(q0)))
+
+opti.minimize(cost)
 
 # COM
 opti.subject_to(opti.bounded(-0.1, com_position(qs)[0], 0.1))
 opti.subject_to(opti.bounded(-0.02, com_position(qs)[1], 0.02))
-opti.subject_to(opti.bounded(0.7, com_position(qs)[2], 0.9)) """
+opti.subject_to(opti.bounded(0.7, com_position(qs)[2], 0.9))
 
 # Standing foot
 opti.subject_to(rf_position(qs) - rf_position(q0) == 0)
 opti.subject_to(log(rf_rotation(qs), rf_rotation(q0)) == 0)
 
 # Free foot
-opti.subject_to(lf_position(qs)[2] >= 0.2)
-"""opti.subject_to(opti.bounded(0.05, lf_position(qs)[0:2], 0.1))
-
+opti.subject_to(lf_position(qs)[2] >= left_foot_target_z)
+opti.subject_to(opti.bounded(0.05, lf_position(qs)[0:2], 0.1))
 r_ref = pin.utils.rotate('z', 3.14 / 2) @ pin.utils.rotate('y', 3.14 / 2) # orientation target
-opti.subject_to(opti.bounded(-0.0, lf_rotation(qs) - r_ref, 0.0))
+opti.subject_to(log( lf_rotation(qs), r_ref) == 0)
 
 # Left hand constraint to be at a certain height
 opti.subject_to(opti.bounded(1.1, rg_position(qs)[2], 1.2))
-opti.subject_to(opti.bounded(-distance_btw_hands/2, rg_position(qs)[1], 0)) """
+opti.subject_to(rg_position(qs)[1] <= 0)
 
 ### ----------------------------------------------------------------------------- ###
 
