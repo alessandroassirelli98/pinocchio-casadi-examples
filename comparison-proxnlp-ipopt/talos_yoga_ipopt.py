@@ -23,9 +23,10 @@ from pinocchio import casadi as cpin
 import casadi
 import numpy as np
 import example_robot_data as robex
-#import matplotlib.pyplot as plt; plt.ion()
+import matplotlib.pyplot as plt
 from pinocchio.visualize import GepettoVisualizer
 import time
+plt.style.use("seaborn")
 
 # Load the model both in pinocchio and pinocchio casadi
 robot = robex.load('talos')
@@ -179,7 +180,11 @@ def call(i, nCalled=10):
 
 opti.callback(call)
 
-opti.solver('ipopt')
+p_opts = {"expand": False}
+s_opts = {"tol": 1e-6}
+opti.solver("ipopt",p_opts,
+                    s_opts)
+
 opti.solve()
 
 print("Final cost is: ", opti.value(cost))
@@ -189,3 +194,13 @@ q_sol = integrate(q0, opti.value(Dxs)[:nv]).full()
 
 if viz is not None:
     viz.display(q_sol)
+
+
+plt.figure(figsize=(12, 6), dpi = 90)
+plt.title('IPOPT Residuals')
+plt.semilogy(opti.stats()['iterations']['inf_du'])
+plt.semilogy(opti.stats()['iterations']['inf_pr'])
+plt.legend(['dual', 'primal'])
+plt.draw()
+
+plt.show()

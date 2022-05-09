@@ -35,6 +35,8 @@ from proxnlp.utils import CasadiFunction, plot_pd_errs
 import matplotlib.pyplot as plt
 import meshcat
 
+plt.style.use("seaborn")
+
 # Load the model both in pinocchio and pinocchio casadi
 robot = robex.load('talos')
 cmodel = cpin.Model(robot.model)
@@ -240,9 +242,9 @@ results = proxnlp.Results(pb_space.nx, prob)
 callback = proxnlp.helpers.HistoryCallback()
 tol = 1e-4
 rho_init = 1e-7
-mu_init = 0.9
+mu_init = 0.001
 
-solver = proxnlp.Solver(pb_space, prob, mu_init=mu_init, rho_init=rho_init, tol=tol, verbose=proxnlp.VERYVERBOSE)
+solver = proxnlp.Solver(pb_space, prob, mu_init=mu_init, rho_init=rho_init, tol=tol, verbose=proxnlp.VERBOSE)
 solver.register_callback(callback)
 solver.maxiters = 50
 solver.use_gauss_newton = True
@@ -254,27 +256,6 @@ try:
     flag = solver.solve(workspace, results, xu_init, lams0)
 except KeyboardInterrupt as e:
     pass
-
-def plot():
-    from proxnlp.utils import plot_pd_errs
-    fig, (ax0, ax1) = plt.subplots(1, 2)
-    fig: plt.Figure
-    ax0: plt.Axes
-    fig.set_size_inches(8.4, 4.8)
-    prim_errs = callback.storage.prim_infeas
-    dual_errs = callback.storage.dual_infeas
-    plot_pd_errs(ax0, prim_errs, dual_errs)
-    ax0.autoscale_view()
-
-    ax1: plt.Axes
-    for i in range(results.numiters):
-        if len(callback.storage.ls_alphas[i]) == 0:
-            continue
-        ax1.plot(callback.storage.ls_alphas[i], callback.storage.ls_values[i])
-        print("plotted for it %d" % i)
-        break
-    plt.tight_layout()
-    plt.show()
 
 ### -------------------------------------------------------------- ###
 # Get results
@@ -295,15 +276,18 @@ print("Left foot pos :", lf_position(qs_opt).full().flatten())
 print("Right foot pos:", rf_position(qs_opt).full().flatten())
 
 
-plot()
-
 ### VISUALIZATION
 
 #viewer.set_cam_target([0., 0.9, 0.])
 
 viz.display(qs_opt)
-arr = viewer.get_image()
-plt.subplots_adjust(0, 0, 1, 1)
-plt.imshow(arr)
-plt.axis("off")
+
+
+plt.figure(figsize=(12, 6), dpi = 90)
+plt.title('PROXNLP Residuals')
+plt.semilogy(dual_errs)
+plt.semilogy(prim_errs)
+plt.legend(['dual', 'primal'])
+plt.draw()
+
 plt.show()
