@@ -50,7 +50,6 @@ cq0 = casadi.SX(q0)
 nq = cmodel.nq
 nv = robot.nv
 nDq = cmodel.nv
-nu = robot.nv - 6
 
 nsteps = 0
 
@@ -256,9 +255,9 @@ workspace = proxnlp.Workspace(pb_space.nx, pb_space.ndx, prob)
 results = proxnlp.Results(pb_space.nx, prob)
 
 callback = proxnlp.helpers.HistoryCallback()
-tol = 1e-4
-rho_init = 1e-7
-mu_init = 0.001
+tol = 1e-6
+rho_init = 1e-10
+mu_init = 0.01
 
 solver = proxnlp.Solver(
     pb_space,
@@ -284,7 +283,7 @@ except KeyboardInterrupt as e:
 def plot():
     from proxnlp.utils import plot_pd_errs
 
-    fig, (ax0, ax1) = plt.subplots(1, 1)
+    fig, ax0 = plt.subplots(1, 1)
     fig: plt.Figure
     ax0: plt.Axes
     fig.set_size_inches(7.2, 4.8)
@@ -329,4 +328,10 @@ plt.semilogy(prim_errs)
 plt.legend(['dual', 'primal'])
 plt.draw()
 
+plt.show()
+
+arr = viewer.get_image()
+plt.subplots_adjust(0, 0, 1, 1)
+plt.imshow(arr)
+plt.axis("off")
 plt.show()
