@@ -80,8 +80,13 @@ feet = { idx: f.name for idx,f in enumerate(model.frames) if 'FOOT' in f.name }
 mass = sum( [ y.mass for y in model.inertias ] )
 grav = np.linalg.norm(model.gravity.linear)
 
+
+
+
+
 ### ---------------------------------------------------------------------- ###
 
+# Build utility functions
 cq = casadi.SX.sym("q",model.nq,1)
 cdq = casadi.SX.sym("dq",model.nv,1)
 
@@ -131,8 +136,9 @@ def compute_cost(q_ref, fs):
     cost += casadi.sumsqr(q_ref)
     return cost
 
-
+### -------------------------------------------------------------------------------------------- ###
 ### PROBLEM --- IPOPT
+
 opti = casadi.Opti()
 
 # Decision variables
@@ -156,16 +162,14 @@ opti.solver("ipopt") # set numerical backend
 sol = opti.solve()
 qopt_ipopt = opti.value(q)
 dqopt_ipopt = opti.value(dq)
-try:
-    fs_opt_ipopt = [ opti.value(f) for f in fs ]
-except:
-    fs_opt_ipopt = [ np.zeros(3) for _ in feet ]
+f_opt_ipopt = [ opti.value(f) for f in fs ]
+
 
 if viz is not None:
     viz.display(qopt_ipopt) 
 
 
-### Problem ----- Proxnlp
+### Problem PROXNLP
 
 xspace = MultibodyPhaseSpace(model)
 pb_space = VectorSpace(4 * 3 +  (xspace.ndx))
@@ -236,11 +240,20 @@ dxs_opt_flat = dxus_opt[: xspace.nx]
 dqs_opt = dxs_opt_flat[: model.nv]
 dvs_opt = dxs_opt_flat[model.nv :]
 
-fs_opt_proxnlp = dxus_opt[xspace.ndx :]
+f_opt_proxnlp = dxus_opt[xspace.ndx :]
+f_opt_proxnlp = np.split(f_opt_proxnlp, 4)
+
+
 
 qopt_proxnlp = integrate(q0, dqs_opt).full()
 
 viz.display(qopt_proxnlp)
 
+
+print('Difference between the solutions')
 for i, (qipopt, qproxnlp) in enumerate(zip (qopt_ipopt, qopt_proxnlp)):
     print("q_" + str(i) + " difference:\t", qipopt-qproxnlp)
+
+print('\nDifference between the solutions')
+for i, (fipopt, fproxnlp) in enumerate(zip (f_opt_ipopt, f_opt_proxnlp)):
+    print("F_" + str(i) + " difference:\t", fipopt-fproxnlp)
