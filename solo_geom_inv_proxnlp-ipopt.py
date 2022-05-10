@@ -22,10 +22,13 @@ import casadi
 import numpy as np
 import example_robot_data as robex 
 from pinocchio.visualize import GepettoVisualizer
+import matplotlib.pyplot as plt
 
 import proxnlp
 from proxnlp.manifolds import MultibodyPhaseSpace, VectorSpace
 from proxnlp.utils import CasadiFunction, plot_pd_errs
+
+plt.style.use("seaborn")
 
 ### LOAD AND DISPLAY SOLO12
 robot = robex.load('solo12')
@@ -163,6 +166,8 @@ sol = opti.solve()
 qopt_ipopt = opti.value(q)
 dqopt_ipopt = opti.value(dq)
 f_opt_ipopt = [ opti.value(f) for f in fs ]
+du_ipopt = opti.stats()['iterations']['inf_du']
+pr_ipopt = opti.stats()['iterations']['inf_pr']
 
 
 if viz is not None:
@@ -243,7 +248,8 @@ dvs_opt = dxs_opt_flat[model.nv :]
 f_opt_proxnlp = dxus_opt[xspace.ndx :]
 f_opt_proxnlp = np.split(f_opt_proxnlp, 4)
 
-
+pr_proxnlp = callback.storage.prim_infeas
+du_proxnlp = callback.storage.dual_infeas
 
 qopt_proxnlp = integrate(q0, dqs_opt).full()
 
@@ -257,3 +263,21 @@ for i, (qipopt, qproxnlp) in enumerate(zip (qopt_ipopt, qopt_proxnlp)):
 print('\nDifference between the solutions')
 for i, (fipopt, fproxnlp) in enumerate(zip (f_opt_ipopt, f_opt_proxnlp)):
     print("F_" + str(i) + " difference:\t", fipopt-fproxnlp)
+
+plt.figure(figsize=(12, 6), dpi = 90)
+plt.subplot(1,2,1)
+plt.title('IPOPT Residuals')
+plt.semilogy(du_ipopt)
+plt.semilogy(pr_ipopt)
+plt.legend(['dual', 'primal'])
+
+plt.subplot(1,2,2)
+plt.title('PROXNLP Residuals')
+plt.semilogy(du_proxnlp)
+plt.semilogy(pr_proxnlp)
+plt.legend(['dual', 'primal'])
+
+
+plt.draw()
+
+plt.show()
