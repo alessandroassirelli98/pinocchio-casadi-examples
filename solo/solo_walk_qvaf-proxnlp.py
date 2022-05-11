@@ -270,7 +270,7 @@ class ShootingNode():
 
 
 class OCP():
-    def __init__(self, robot, gait, solver='ipopt'):
+    def __init__(self, robot, gait, x0, x_ref, u_ref, v_lin_target, v_ang_target, solver='ipopt'):
         
         self.solver = solver
 
@@ -281,6 +281,14 @@ class OCP():
         self.nq = robot.nq
         self.nv = robot.nv
         self.nu = robot.nv - 6
+
+        self.x0 = x0
+        self.x_ref = x_ref
+        self.u_ref = u_ref
+        self.v_lin_target = v_lin_target
+        self.v_ang_target = v_ang_target
+
+        self.T = len(gait) - 1
 
         self.iterationTime = 0
 
@@ -296,14 +304,18 @@ class OCP():
     def patternToId(self, gait):
         return tuple(self.allContactIds[i] for i,c in enumerate(gait) if c==1 )
     
-    def warmstart(self, guess=None):
-        [print("empty warmstart") for g in guess if g == [] ]
-            
+    def warmstart(self, guess=None):   
+        for g in guess:
+            if guess[g] == []:
+                print("No warmstart provided")         
+                return 0
         try:
             xs_g = guess['xs']
             us_g = guess['us']
             acs_g = guess['acs']
             fs_g = guess['fs']
+
+
 
             def xdiff(x1,x2):
                 nq = self.model.nq
@@ -352,7 +364,7 @@ class OCP():
         base_pos_log = np.array(base_pos_log)
         return base_pos_log
 
-    def make_ocp(self, x_ref, u_ref, v_lin_target, v_ang_target):
+    def make_ocp(self):
         totalcost = 0
         eq = []
         ineq = []
@@ -364,9 +376,9 @@ class OCP():
 
             if (self.contactSequence[t] != self.contactSequence[t-1] and t >= 1): # If it is landing
                 print('Landing on ', str(self.runningModels[t].contactIds)) 
-                eq.append(self.runningModels[t].constraint_landing_feet_eq(x_ref))
+                eq.append(self.runningModels[t].constraint_landing_feet_eq(self.x_ref))
 
-            xnext,rcost = self.runningModels[t].calc(x_ref=x_ref,u_ref=u_ref, \
+            xnext,rcost = self.runningModels[t].calc(x_ref=self.x_ref,u_ref=self.u_ref, \
                                                 v_lin_target=v_lin_target, \
                                                 v_ang_target=v_ang_target)
 
@@ -375,16 +387,16 @@ class OCP():
             eq.append(self.runningModels[t].constraint_dynamics_eq() )
             eq.append( self.runningModels[t].difference(self.xs[t + 1],xnext) - np.zeros(2*self.runningModels[t].nv) )
 
-            ineq.append(self.runningModels[t].constraint_swing_feet_ineq(x_ref=x_ref, k = conf.k)) 
+            ineq.append(self.runningModels[t].constraint_swing_feet_ineq(x_ref=self.x_ref, k = conf.k)) 
             ineq.append(self.runningModels[t].constraint_standing_feet_ineq())
-            """ ineq.append(self.us[t] - self.effort_limit)
-            ineq.append(-self.us[t] - self.effort_limit) """
+            ineq.append(self.us[t] - self.effort_limit)
+            ineq.append(-self.us[t] - self.effort_limit)
 
             totalcost += rcost
     
-        """ if (self.contactSequence[self.T] != self.contactSequence[self.T-1]): # If it is landing
+        if (self.contactSequence[self.T] != self.contactSequence[self.T-1]): # If it is landing
             print('Landing on ', str(self.terminalModel.contactIds)) 
-            eq.append(self.terminalModel.constraint_landing_feet_eq(x_ref)) """
+            eq.append(self.terminalModel.constraint_landing_feet_eq(self.x_ref))
         eq.append(self.xs[self.T][self.terminalModel.nq :])
 
         eq_constraints = casadi.vertcat(*eq)
@@ -392,32 +404,21 @@ class OCP():
 
         return totalcost, eq_constraints, ineq_constraints
 
+    def use_ipopt_solver(self, guess = None):
 
-    def solve_ipopt(self, gait, x0, x_ref, u_ref, v_lin_target, v_ang_target, guess=None):
-
-        
-        self.x0 = x0
-
-        self.T = T = len(gait) - 1
-
-        self.runningModels = runningModels = [ self.casadiActionModels[self.contactSequence[t]] for t in range(T) ]
-        self.terminalModel = terminalModel = self.casadiActionModels[self.contactSequence[T]]
-        
         opti = casadi.Opti()
-
         # Optimization variables
-        self.dxs = [ opti.variable(model.ndx) for model in runningModels+[terminalModel] ]   
-        self.acs = [ opti.variable(model.nv) for model in runningModels ]
-        self.us =  [ opti.variable(model.nu) for model in runningModels ]
-        self.xs =  [ m.integrate(x0,dx) for m,dx in zip(runningModels+[terminalModel],self.dxs) ]
+        self.dxs = [ opti.variable(model.ndx) for model in self.runningModels+[self.terminalModel] ]   
+        self.acs = [ opti.variable(model.nv) for model in self.runningModels ]
+        self.us =  [ opti.variable(model.nu) for model in self.runningModels ]
+        self.xs =  [ m.integrate(x0,dx) for m,dx in zip(self.runningModels+[self.terminalModel],self.dxs) ]
         self.fs =  []
-        for m in runningModels:     
+        for m in self.runningModels:     
             f_tmp = [opti.variable(3) for _ in range(len(m.contactIds)) ]
             self.fs.append(f_tmp)
         self.fs = self.fs
 
-        cost, eq_constraints, ineq_constraints = self.make_ocp(x_ref, u_ref, v_lin_target, v_ang_target)
-
+        cost, eq_constraints, ineq_constraints = self.make_ocp()
 
         opti.minimize(cost)
 
@@ -439,16 +440,99 @@ class OCP():
         opti.solver("ipopt",p_opts,
                     s_opts)
 
-        #self.warmstart(guess)
+        self.warmstart(guess)
 
         ### SOLVE
-        start_time = time() 
         opti.solve_limited()
-
-
-
-
         self.opti = opti
+
+    def use_proxnlp_solver(self, guess):
+        xspace = MultibodyPhaseSpace(self.model)
+        pb_space = VectorSpace((self.T+1) * (xspace.ndx) + \
+                self.T*self.nv + \
+                self.T*self.nu +\
+                self.T*(2 * 3))
+
+        self.dxs = [casadi.SX.sym('dxs_' + str(i), model.ndx) for i, model in enumerate(self.runningModels + [self.terminalModel])]
+        self.acs = [casadi.SX.sym('acs_' + str(i), model.nv) for i, model in enumerate(self.runningModels)]
+        self.us = [casadi.SX.sym('u_' + str(i), model.nu) for i, model in enumerate(self.runningModels)]
+        self.xs = [ m.integrate(x0,dx) for m,dx in zip(self.runningModels+[self.terminalModel],self.dxs) ]
+        self.fs =  []
+        for i,m in enumerate(self.runningModels):     
+            f_tmp = [casadi.SX.sym('fs_' + str(i) + '_' + str(_), 3) for _ in range(len(m.contactIds)) ]
+            self.fs.append(f_tmp)
+        self.fs = self.fs
+
+        fs_tmp = []
+        for f in self.fs: fs_tmp.append(casadi.vertcat(*f))
+
+        dxs = casadi.vertcat(*self.dxs)
+        acs = casadi.vertcat(*self.acs)
+        us = casadi.vertcat(*self.us)
+        fs = casadi.vertcat(*fs_tmp)
+
+        XAUF = casadi.vertcat(dxs, acs, us, fs)
+        cost, eq_constraints, ineq_constraints = self.make_ocp()
+
+        cost_fun = CasadiFunction(pb_space.nx, pb_space.ndx, cost, XAUF, use_hessian=True)
+        eq_fun = CasadiFunction(pb_space.nx, pb_space.ndx, eq_constraints , XAUF, use_hessian=False)
+        ineq_fun = CasadiFunction(pb_space.nx, pb_space.ndx, ineq_constraints , XAUF, use_hessian=False)
+
+        cost_fun_ = proxnlp.costs.CostFromFunction(cost_fun)
+        eq_constr = proxnlp.constraints.create_equality_constraint(eq_fun)
+        ineq_constr = proxnlp.constraints.create_inequality_constraint(ineq_fun)
+
+        constraints = []
+        constraints.append(eq_constr)
+        constraints.append(ineq_constr)
+
+        prob = proxnlp.Problem(cost_fun_, constraints)
+
+        print("No. of variables  :", pb_space.nx)
+        print("No. of constraints:", prob.total_constraint_dim)
+        workspace = proxnlp.Workspace(pb_space.nx, pb_space.ndx, prob)
+        results = proxnlp.Results(pb_space.nx, prob)
+
+        callback = proxnlp.helpers.HistoryCallback()
+        tol = 1e-4
+        rho_init = 1e-7
+        mu_init = 0.01
+
+        solver = proxnlp.Solver(
+            pb_space,
+            prob,
+            mu_init=mu_init,
+            rho_init=rho_init,
+            tol=tol,
+            verbose=proxnlp.VERBOSE,
+        )
+        solver.register_callback(callback)
+        solver.maxiters = 1000
+        solver.use_gauss_newton = True
+
+        opt_init = pb_space.neutral()
+        lams0 = [np.zeros(cs.nr) for cs in constraints]
+
+        try:
+            flag = solver.solve(workspace, results, opt_init, lams0)
+        except KeyboardInterrupt as e:
+            pass
+
+
+    def solve(self, guess=None):
+
+        self.runningModels = [ self.casadiActionModels[self.contactSequence[t]] for t in range(self.T) ]
+        self.terminalModel = self.casadiActionModels[self.contactSequence[self.T]]
+
+        start_time = time() 
+        if self.solver == 'ipopt':
+            print("Using IPOPT")
+            self.use_ipopt_solver(guess)
+
+        if self.solver == 'proxnlp':
+            print("Using PROXNLP")
+            self.use_proxnlp_solver(guess)
+
         self.iterationTime = time() - start_time
 
 
@@ -464,7 +548,8 @@ gait = [] \
 
 gait = gait*2
 
-ocp = OCP(robot, gait, 'ipopt')
+ocp = OCP(robot=robot ,gait=gait, x0=x0, x_ref=x0, u_ref=u0, \
+    v_lin_target=v_lin_target, v_ang_target=v_ang_target, solver='ipopt' )
 dt = conf.dt
 allContactIds = ocp.allContactIds
 contactNames = ocp.contactNames
@@ -483,8 +568,7 @@ ocp_times = []
 ocp_predictions = []
 
 gait = np.roll(gait, -1, axis=0)
-ocp.solve_ipopt(gait=gait, x0=x0, x_ref=x0, u_ref = u0, v_lin_target=v_lin_target, \
-                    v_ang_target=v_ang_target, guess=warmstart)
+ocp.solve(guess=warmstart)
 x, a, u, f, _ = ocp.get_results()  
 q_sol = x[:, : robot.nq]
 
