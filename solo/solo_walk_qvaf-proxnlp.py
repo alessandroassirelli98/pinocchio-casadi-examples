@@ -219,10 +219,6 @@ class ShootingNode():
     def constraint_dynamics_eq(self):
         eq = []
         eq.append( self.acc(self.x, self.tau, *self.fs ) - self.a )
-        if(self.solver_type == 'proxnlp'):
-            print("add fake constraint")
-            eq.append( self.acc(self.x, self.tau, *self.fs ) - self.a )
-
         return(casadi.vertcat(*eq))
 
     def constraint_swing_feet_ineq(self, x_ref, k):
@@ -496,7 +492,7 @@ class OCP():
         callback = proxnlp.helpers.HistoryCallback()
         tol = 1e-4
         rho_init = 1e-7
-        mu_init = 0.01
+        mu_init = 0.00001
 
         solver = proxnlp.Solver(
             pb_space,
@@ -549,7 +545,7 @@ gait = [] \
 gait = gait*2
 
 ocp = OCP(robot=robot ,gait=gait, x0=x0, x_ref=x0, u_ref=u0, \
-    v_lin_target=v_lin_target, v_ang_target=v_ang_target, solver='ipopt' )
+    v_lin_target=v_lin_target, v_ang_target=v_ang_target, solver= 'proxnlp' )
 dt = conf.dt
 allContactIds = ocp.allContactIds
 contactNames = ocp.contactNames
