@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from pinocchio.visualize import GepettoVisualizer
 from time import time
 import os
+import conf as conf
 
 plt.style.use('seaborn')
 path = os.getcwd()
@@ -23,21 +24,19 @@ path = os.getcwd()
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
 DT = 0.015
-walking_steps = 12
-mu = 1
-kx = 10
-ky = 10
-k = np.array([kx, ky])
-v_lin_target = np.array([1, 0, 0])
-v_ang_target = np.array([0, 0, 0])
+walking_steps = conf.timestep_per_phase
+mu = conf.mu
+k = conf.k
+v_lin_target = conf.v_lin_target
+v_ang_target = conf.v_ang_target
 
-lin_vel_weight = np.array([10, 10, 10])
-ang_vel_weight = np.array([10, 10, 10])
 force_reg_weight = 1e-2
 control_weight = 1e1
 base_reg_cost = 1e1
 joints_reg_cost = 1e2
 sw_feet_reg_cost = 1e1
+lin_vel_weight = conf.lin_vel_weight
+ang_vel_weight = conf.ang_vel_weight
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -57,11 +56,11 @@ data = model.createData()
 
 # Initial config, also used for warm start
 x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
-x0[3:7] = np.array([0,0,1,0])
+#x0[3:7] = np.array([0,0,1,0])
 # quasi static for x0, used for warm-start and regularization
-u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
-                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
-                0.25720939, -0.51441314]) 
+u0 = conf.u0
+a0 = np.zeros(robot.nv)
+fs0 = [np.ones(3)*0, np.ones(3) *0]
 
 
 contactNames = [ f.name for f in cmodel.frames if "FOOT" in f.name ]
@@ -168,7 +167,7 @@ class CasadiActionModel:
 
     def cost(self, x, u, fs):
         cost = 0
-        cost += force_reg_weight *casadi.sumsqr(u) *self.dt
+        cost += control_weight *casadi.sumsqr(u - u0) *self.dt
         cost += base_reg_cost *casadi.sumsqr(x[3:7] - x0[3:7]) * self.dt
         cost += joints_reg_cost *casadi.sumsqr(x[7 : self.cmodel.nq] - x0[7: self.cmodel.nq]) *self.dt
 
@@ -185,7 +184,7 @@ class CasadiActionModel:
         cost += casadi.sumsqr(ang_vel_weight*(self.baseVelocityAng(x) - v_ang_target)) * self.dt
         return cost
 
-    def calc(self,x, u, a, fs, ocp):
+    def calc(self, x, a, u, fs, ocp):
         '''
         This function return xnext,cost
         '''
@@ -223,7 +222,6 @@ class CasadiActionModel:
         
         for sw_foot in self.freeIds:
             ocp.subject_to(self.feet[sw_foot](x)[2] >= self.feet[sw_foot](x0)[2])
-            #cost += 1e5 * casadi.sumsqr(self.feet[sw_foot](x)[2] - step_height) *self.dt
             ocp.subject_to(self.vfeet[sw_foot](x)[0:2] <= k* self.feet[sw_foot](x)[2])
             
         return xnext,cost
@@ -238,7 +236,7 @@ contactPattern = [] \
     + [ [ 1,0,0,1 ] ] * walking_steps  \
     + [ [ 0,1,1,0 ] ] * walking_steps 
 
-contactPattern = contactPattern*4
+contactPattern = contactPattern*2
 #contactPattern = np.roll(contactPattern, -6, axis=0)
 
 T = len(contactPattern) - 1
@@ -284,23 +282,16 @@ for t in range(T):
 
         print('Landing on ', str(runningModels[t].contactIds)) 
 
-    xnext,rcost = runningModels[t].calc(xs[t], us[t], acs[t], fs[t], opti)
+    xnext,rcost = runningModels[t].calc(xs[t], acs[t], us[t], fs[t], opti)
     opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
-    opti.subject_to(opti.bounded(-effort_limit,  us[t], effort_limit ))
+    #opti.subject_to(opti.bounded(-effort_limit,  us[t], effort_limit ))
     totalcost += rcost
 
 opti.subject_to(xs[T][cmodel.nq :] == 0)
 opti.minimize(totalcost)
 
 p_opts = {}
-s_opts = {"tol": 1e-2,
-    "acceptable_tol":1e-2,
-    #"max_iter": 21,
-    "compl_inf_tol": 1e-2,
-    "constr_viol_tol": 1e-2
-    #"resto_failure_feasibility_threshold": 1
-    #"linear_solver": "ma57"
-    }
+s_opts = {}
 opti.solver("ipopt",p_opts,
                     s_opts)
 
