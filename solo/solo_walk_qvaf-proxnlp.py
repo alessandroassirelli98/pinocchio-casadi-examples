@@ -492,7 +492,7 @@ class OCP():
         callback = proxnlp.helpers.HistoryCallback()
         tol = 1e-4
         rho_init = 1e-7
-        mu_init = 0.00001
+        mu_init = 0.005
 
         solver = proxnlp.Solver(
             pb_space,
