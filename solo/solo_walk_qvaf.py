@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from pinocchio.visualize import GepettoVisualizer
 from time import time
 import os
-import conf as conf
+
 
 plt.style.use('seaborn')
 path = os.getcwd()
@@ -24,20 +24,21 @@ path = os.getcwd()
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
 DT = 0.015
-walking_steps = conf.timestep_per_phase
-mu = conf.mu
-k = conf.k
-v_lin_target = conf.v_lin_target
-v_ang_target = conf.v_ang_target
-
+mu = 1
+kx = 30
+ky = 30
+k = np.array([kx, ky])
+lin_vel_weight = np.array([10, 10, 10])
+ang_vel_weight = np.array([10, 10, 10])
 force_reg_weight = 1e-2
 control_weight = 1e1
 base_reg_cost = 1e1
 joints_reg_cost = 1e2
 sw_feet_reg_cost = 1e1
-lin_vel_weight = conf.lin_vel_weight
-ang_vel_weight = conf.ang_vel_weight
 
+timestep_per_phase = 12
+v_lin_target = np.array([3, 0, 0])
+v_ang_target = np.array([0, 0, 0])
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
 robot = robex.load('solo12')
@@ -58,7 +59,9 @@ data = model.createData()
 x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
 #x0[3:7] = np.array([0,0,1,0])
 # quasi static for x0, used for warm-start and regularization
-u0 = conf.u0
+u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
+                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
+                0.25720939, -0.51441314])  ### quasi-static for x0
 a0 = np.zeros(robot.nv)
 fs0 = [np.ones(3)*0, np.ones(3) *0]
 
@@ -233,8 +236,8 @@ class CasadiActionModel:
 
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
 contactPattern = [] \
-    + [ [ 1,0,0,1 ] ] * walking_steps  \
-    + [ [ 0,1,1,0 ] ] * walking_steps 
+    + [ [ 1,0,0,1 ] ] * timestep_per_phase  \
+    + [ [ 0,1,1,0 ] ] * timestep_per_phase
 
 contactPattern = contactPattern*2
 #contactPattern = np.roll(contactPattern, -6, axis=0)
@@ -284,7 +287,7 @@ for t in range(T):
 
     xnext,rcost = runningModels[t].calc(xs[t], acs[t], us[t], fs[t], opti)
     opti.subject_to( runningModels[t].difference(xs[t + 1],xnext) == np.zeros(2*cmodel.nv) )  # x' = f(x,u)
-    #opti.subject_to(opti.bounded(-effort_limit,  us[t], effort_limit ))
+    opti.subject_to(opti.bounded(-effort_limit,  us[t], effort_limit ))
     totalcost += rcost
 
 opti.subject_to(xs[T][cmodel.nq :] == 0)

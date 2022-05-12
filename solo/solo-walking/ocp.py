@@ -1,12 +1,3 @@
-'''
-OCP with constrained dynamics
-
-Simple example of walk  
-
-It takes around 22 iter to converge without warmstart
-If warmstarted with the solution obtained by the ocp without warmstart then it takes 900 iter
-'''
-
 import pinocchio as pin
 from pinocchio import casadi as cpin
 import casadi
@@ -14,9 +5,9 @@ import numpy as np
 import example_robot_data as robex
 import matplotlib.pyplot as plt
 from pinocchio.visualize import GepettoVisualizer
+import ocp_parameters_conf as conf
 from time import time
 import os
-import conf as conf
 
 import proxnlp
 from proxnlp.manifolds import MultibodyPhaseSpace, VectorSpace
@@ -26,45 +17,6 @@ from proxnlp.utils import CasadiFunction, plot_pd_errs
 plt.style.use('seaborn')
 path = os.getcwd()
 
-### HYPER PARAMETERS
-# Hyperparameters defining the optimal control problem.
-mu = conf.mu
-k = conf.k
-v_lin_target = conf.v_lin_target
-v_ang_target = conf.v_ang_target
-
-### LOAD AND DISPLAY SOLO
-# Load the robot model from example robot data and display it if possible in Gepetto-viewer
-robot = robex.load('solo12')
-
-try:
-    viz = GepettoVisualizer(robot.model,robot.collision_model,robot.visual_model)
-    viz.initViewer()
-    viz.loadViewerModel()
-    gv = viz.viewer.gui
-except:
-    print("No viewer"  )
-viz.display(robot.q0)
-
-model = robot.model
-cmodel = cpin.Model(robot.model)
-data = model.createData()
-
-# Initial config, also used for warm start
-x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
-#x0[3:7] = np.array([0,0,1,0])
-# quasi static for x0, used for warm-start and regularization
-u0 =  conf.u0
-a0 = np.zeros(robot.nv)
-fs0 = [np.ones(3)*0, np.ones(3) *0]
-
-########################################################################################################
-### ACTION MODEL #######################################################################################
-########################################################################################################
-
-# The action model stores the computation of the dynamic -f- and cost -l- functions, both return by
-# calc as self.calc(x,u) -> [xnext=f(x,u),cost=l(x,u)]
-# The dynamics is obtained by RK4 integration of the pinocchio ABA function.
 class ShootingNode():
     def __init__(self, cmodel, model, q0, allContactIds, contactIds, solver_type = 'ipopt'):
         
@@ -311,8 +263,6 @@ class OCP():
             acs_g = guess['acs']
             fs_g = guess['fs']
 
-
-
             def xdiff(x1,x2):
                 nq = self.model.nq
                 return np.concatenate([
@@ -325,7 +275,7 @@ class OCP():
                 [self.opti.set_initial(f[i], fg[i]) for i in range(len(f)) ]
             print("Got warm start")
         except:
-            print("No warm start")
+            print("Can't load warm start")
     
     def get_results(self):
         xs_sol = np.array([ self.opti.value(x) for x in self.xs ])
@@ -375,8 +325,8 @@ class OCP():
                 eq.append(self.runningModels[t].constraint_landing_feet_eq(self.x_ref))
 
             xnext,rcost = self.runningModels[t].calc(x_ref=self.x_ref,u_ref=self.u_ref, \
-                                                v_lin_target=v_lin_target, \
-                                                v_ang_target=v_ang_target)
+                                                v_lin_target=self.v_lin_target, \
+                                                v_ang_target=self.v_ang_target)
 
             # Constraints
             eq.append(self.runningModels[t].constraint_standing_feet_eq() )
@@ -403,11 +353,12 @@ class OCP():
     def use_ipopt_solver(self, guess = None):
 
         opti = casadi.Opti()
+        self.opti = opti
         # Optimization variables
         self.dxs = [ opti.variable(model.ndx) for model in self.runningModels+[self.terminalModel] ]   
         self.acs = [ opti.variable(model.nv) for model in self.runningModels ]
         self.us =  [ opti.variable(model.nu) for model in self.runningModels ]
-        self.xs =  [ m.integrate(x0,dx) for m,dx in zip(self.runningModels+[self.terminalModel],self.dxs) ]
+        self.xs =  [ m.integrate(self.x0,dx) for m,dx in zip(self.runningModels+[self.terminalModel],self.dxs) ]
         self.fs =  []
         for m in self.runningModels:     
             f_tmp = [opti.variable(3) for _ in range(len(m.contactIds)) ]
@@ -440,8 +391,8 @@ class OCP():
 
         ### SOLVE
         opti.solve_limited()
-        self.opti = opti
-
+        print("b")
+        
     def use_proxnlp_solver(self, guess):
         xspace = MultibodyPhaseSpace(self.model)
         pb_space = VectorSpace((self.T+1) * (xspace.ndx) + \
@@ -452,7 +403,7 @@ class OCP():
         self.dxs = [casadi.SX.sym('dxs_' + str(i), model.ndx) for i, model in enumerate(self.runningModels + [self.terminalModel])]
         self.acs = [casadi.SX.sym('acs_' + str(i), model.nv) for i, model in enumerate(self.runningModels)]
         self.us = [casadi.SX.sym('u_' + str(i), model.nu) for i, model in enumerate(self.runningModels)]
-        self.xs = [ m.integrate(x0,dx) for m,dx in zip(self.runningModels+[self.terminalModel],self.dxs) ]
+        self.xs = [ m.integrate(self.x0,dx) for m,dx in zip(self.runningModels+[self.terminalModel],self.dxs) ]
         self.fs =  []
         for i,m in enumerate(self.runningModels):     
             f_tmp = [casadi.SX.sym('fs_' + str(i) + '_' + str(_), 3) for _ in range(len(m.contactIds)) ]
@@ -514,7 +465,6 @@ class OCP():
         except KeyboardInterrupt as e:
             pass
 
-
     def solve(self, guess=None):
 
         self.runningModels = [ self.casadiActionModels[self.contactSequence[t]] for t in range(self.T) ]
@@ -530,53 +480,3 @@ class OCP():
             self.use_proxnlp_solver(guess)
 
         self.iterationTime = time() - start_time
-
-
-########################################################################################################
-### OCP PROBLEM ########################################################################################
-########################################################################################################
-
-#     10       18        26        34
-# [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
-gait = [] \
-    + [ [ 1,0,0,1 ] ] * conf.timestep_per_phase  \
-    + [ [ 0,1,1,0 ] ] * conf.timestep_per_phase
-
-gait = gait*2
-
-ocp = OCP(robot=robot ,gait=gait, x0=x0, x_ref=x0, u_ref=u0, \
-    v_lin_target=v_lin_target, v_ang_target=v_ang_target, solver= 'proxnlp' )
-dt = conf.dt
-allContactIds = ocp.allContactIds
-contactNames = ocp.contactNames
-
-warmstart = {'xs': [], 'acs': [], 'us':[], 'fs': []}
-
-""" guess = np.load(os.getcwd() + "/solo/sol.npy",allow_pickle=True).item()
-warmstart['xs'] = guess['xs']
-warmstart['acs'] = guess['acs']
-warmstart['us'] = guess['us']
-warmstart['fs'] = guess['fs'] """
-
-feet_log = {i:[] for i in allContactIds}
-residuals_log = {'inf_pr': [], 'inf_du': []}
-ocp_times = []
-ocp_predictions = []
-
-gait = np.roll(gait, -1, axis=0)
-ocp.solve(guess=warmstart)
-x, a, u, f, _ = ocp.get_results()  
-q_sol = x[:, : robot.nq]
-
-viz.play(q_sol.T, dt)
-
-np.save(open(os.getcwd() + '/solo/sol.npy', "wb"),
-        {
-            "xs": x,
-            "us": u,
-            "acs": a,
-            "fs": f
-        })
-
-### -------------------------------------------------------------------------------------- ###
-### CHECK CONTRAINTS

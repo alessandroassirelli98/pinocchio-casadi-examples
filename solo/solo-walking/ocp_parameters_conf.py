@@ -4,9 +4,6 @@ import pinocchio.casadi as cpin
 
 # OCP parameters
 dt = 0.015
-timestep_per_phase = 8
-horizon = 24
-
 mu = 1
 kx = 30
 ky = 30

@@ -1,5 +1,5 @@
-import ocp
-import conf
+import ocp as optimalControlProblem
+import ocp_parameters_conf as conf
 import numpy as np
 from pinocchio.visualize import GepettoVisualizer
 import example_robot_data as robex
@@ -8,8 +8,11 @@ import os
 import time
 path = os.getcwd()
 
+### HYPER PARAMETERS
+# Hyperparameters defining the optimal control problem.
 dt = conf.dt
-
+timestep_per_phase = 12
+horizon = 36
 v_lin_target = np.array([1, 0, 0])
 v_ang_target = np.array([0, 0, 0])
 
@@ -31,37 +34,42 @@ except:
 #     10       18        26        34
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
 gait = [] \
-    + [ [ 1,0,0,1 ] ] * conf.timestep_per_phase  \
-    + [ [ 0,1,1,0 ] ] * conf.timestep_per_phase
-
-ocp = ocp.OCP(robot, gait)
-allContactIds = ocp.allContactIds
-contactNames = ocp.contactNames
+    + [ [ 1,0,0,1 ] ] * timestep_per_phase  \
+    + [ [ 0,1,1,0 ] ] * timestep_per_phase
 
 warmstart = {'xs': [], 'acs': [], 'us':[], 'fs': []}
 
 x_mpc = []
 x_mpc.append(x0)
-feet_log = {i:[] for i in allContactIds}
 residuals_log = {'inf_pr': [], 'inf_du': []}
 ocp_times = []
 ocp_predictions = []
 
 start_time = time.time()
-for i in range(conf.horizon):
-    print('Iteration ', str(i), ' / ', str(conf.horizon))
+for i in range(horizon):
+    print('Iteration ', str(i), ' / ', str(horizon))
 
-    gait = np.roll(gait, -1, axis=0)
-    ocp.solve(gait=gait, x0=x_mpc[-1], x_ref=x0, u_ref = u0, v_lin_target=v_lin_target, \
-                    v_ang_target=v_ang_target, guess=warmstart)
+    if i != 0:
+        gait = np.roll(gait, -1, axis=0)
+
+    ocp = optimalControlProblem.OCP(robot=robot, gait=gait, x0=x_mpc[-1], x_ref=x0,\
+                                        u_ref = u0, v_lin_target=v_lin_target, \
+                                        v_ang_target=v_ang_target, solver='ipopt')
+    if i == 0:
+        allContactIds = ocp.allContactIds
+        contactNames = ocp.contactNames
+        feet_log = {i:[] for i in allContactIds}
+    
+    ocp.solve(guess=warmstart)
     print('OCP time: ', ocp.iterationTime)
     
-    ocp_times.append(ocp.iterationTime)
-    
     x, a, u, f, _ = ocp.get_results()  
+
     ocp_feet_log = ocp.get_feet_position(x)
     ocp_predictions.append(ocp.get_base_log(x))
+    ocp_times.append(ocp.iterationTime)
     [residuals_log[key].append(ocp.opti.stats()['iterations'][key]) for key in residuals_log]
+    for foot in allContactIds: feet_log[foot] += [ocp_feet_log[foot][0, :]]
 
     x_mpc.append(x[1])
     
@@ -76,7 +84,7 @@ for i in range(conf.horizon):
     warmstart['acs'] = a[1:]
     warmstart['us'] = u[1:]
     warmstart['fs'] = f[1:]
-    for foot in allContactIds: feet_log[foot] += [ocp_feet_log[foot][0, :]]
+    
 
 for foot in allContactIds: feet_log[foot] = np.array(feet_log[foot])  
 print( 'Total MPC time: ', time.time() - start_time, '\n\n')
@@ -90,12 +98,12 @@ base_log_mpc = ocp.get_base_log(x_mpc)
 ### --------------------------------------------------- ###
 
 t_scale = np.linspace(0, (ocp.T)*dt, ocp.T+1)
-t_scale_mpc = np.linspace(0, (conf.horizon)*dt, conf.horizon+1)
+t_scale_mpc = np.linspace(0, (horizon)*dt, horizon+1)
 
 
 plt.figure(figsize=(12, 6), dpi = 90)
-for i in range(conf.horizon):
-    plt.subplot(int((conf.horizon + 1)/2), 2, i+1)
+for i in range(horizon):
+    plt.subplot(int((horizon + 1)/2), 2, i+1)
     plt.title('Residuals' + str(i))
     plt.semilogy(residuals_log['inf_du'][i])
     plt.semilogy(residuals_log['inf_pr'][i])
@@ -119,7 +127,7 @@ plt.figure(figsize=(12, 18), dpi = 90)
 for p in range(3):
     plt.subplot(3,1, p+1)
     plt.title('Base on ' + legend[p])
-    for i in range(conf.horizon):
+    for i in range(horizon):
         t = np.linspace(i*dt, (ocp.T+ i)*dt, ocp.T+1)
         y = ocp_predictions[i][:,p]
         for j in range(len(y) - 1):
