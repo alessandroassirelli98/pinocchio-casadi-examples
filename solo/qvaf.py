@@ -185,7 +185,14 @@ class CasadiActionModel:
         for f,R in zip(fs,self.Rfeet):   # Cone constrains (flat terrain)
                 fw = R(x) @ f
                 ocp.subject_to(fw[2] >= 0)
-                ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0:2]))
+
+                # Linearized friction cone
+                ocp.subject_to(ocp.bounded(-mu*fw[2], fw[0], mu*fw[2]))
+                ocp.subject_to(ocp.bounded(-mu*fw[2], fw[1], mu*fw[2]))
+
+                # Quadratic constraint
+                """ ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[0]))
+                ocp.subject_to(mu**2 * fw[2]**2 >= casadi.sumsqr(fw[1])) """
             
         return xnext,cost
 
