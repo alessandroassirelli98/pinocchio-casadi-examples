@@ -133,9 +133,23 @@ class ShootingNode():
         nq = self.nq     
 
         # Euler integration, using directly the acceleration <a> introduced as a slack variable.
-        vnext = self.x[nq:] + self.a*dt
-        qnext = self.integrate_q(self.x[:nq], vnext*dt)
+        use_rk2 = False
+        if not use_rk2:
+            vnext = self.x[nq:] + self.a*dt
+            qnext = self.integrate_q(self.x[:nq], vnext*dt)
+        else:
+            # half-dt step over x=(q,v)
+            vm = self.x[nq:] + self.a*.5*dt
+            qm = self.integrate_q(self.x[:nq], .5 * self.x[nq:]*dt)
+            xm = casadi.vertcat(qm, vm)
+            amid = self.acc(xm, self.tau, *self.fs)
+
+            # then simple Euler step over (qm, vm)
+            qnext = self.integrate_q(qm, vm*dt)
+            vnext = vm + amid*dt
+            
         xnext = casadi.vertcat(qnext,vnext)
+            
 
         # Cost functions:
         self.compute_cost(x_ref, u_ref, v_lin_target, v_ang_target)
@@ -165,7 +179,11 @@ class ShootingNode():
             f_ = self.fs[i]
             fw = R @ f_
             ineq.append(-fw[2])
-            ineq.append(-conf.mu**2 * fw[2]**2 + casadi.sumsqr(fw[0:2]))      
+            """ ineq.append( fw[0] - conf.mu*fw[2] )
+            ineq.append( -fw[0] - conf.mu*fw[2] )
+            ineq.append(  fw[1] - conf.mu*fw[2] )
+            ineq.append( -fw[1] - conf.mu*fw[2] ) """
+ 
         return(casadi.vertcat(*ineq))
 
     def constraint_dynamics_eq(self):
@@ -194,7 +212,7 @@ class ShootingNode():
 
     def body_reg_cost(self, x_ref):
         self.cost += conf.base_reg_cost * casadi.sumsqr(self.x[3:7] - x_ref[3:7]) * self.dt
-        #self.cost += conf.base_reg_cost * casadi.sumsqr( self.log3(self.baseRotation(x), self.baseRotation(x_ref)) ) * self.dt
+        #self.cost += conf.base_reg_cost * casadi.sumsqr( self.log3(self.baseRotation(self.x), self.baseRotation(x_ref)) ) * self.dt
         self.cost += conf.joints_reg_cost * casadi.sumsqr(self.x[7 : self.nq] - x_ref[7: self.nq]) *self.dt
 
     def target_cost(self, v_lin_target, v_ang_target):
@@ -257,41 +275,87 @@ class OCP():
             if guess[g] == []:
                 print("No warmstart provided")         
                 return 0
-        try:
-            xs_g = guess['xs']
-            us_g = guess['us']
-            acs_g = guess['acs']
-            fs_g = guess['fs']
+        
+        if self.solver == 'ipopt':
+            try:
+                xs_g = guess['xs']
+                us_g = guess['us']
+                acs_g = guess['acs']
+                fs_g = guess['fs']
 
-            def xdiff(x1,x2):
-                nq = self.model.nq
-                return np.concatenate([
-                    pin.difference(self.model,x1[:nq],x2[:nq]), x2[nq:]-x1[nq:] ])
+                def xdiff(x1,x2):
+                    nq = self.model.nq
+                    return np.concatenate([
+                        pin.difference(self.model,x1[:nq],x2[:nq]), x2[nq:]-x1[nq:] ])
 
-            for x,xg in zip(self.dxs,xs_g): self.opti.set_initial(x, xdiff(self.x0,xg))
-            for a,ag in zip(self.acs,acs_g): self.opti.set_initial(a, ag)
-            for u,ug in zip(self.us,us_g): self.opti.set_initial(u,ug)
-            for f, fg in zip(self.fs, fs_g):
-                [self.opti.set_initial(f[i], fg[i]) for i in range(len(f)) ]
-            print("Got warm start")
-        except:
-            print("Can't load warm start")
-    
+                for x,xg in zip(self.dxs,xs_g): self.opti.set_initial(x, xdiff(self.x0,xg))
+                for a,ag in zip(self.acs,acs_g): self.opti.set_initial(a, ag)
+                for u,ug in zip(self.us,us_g): self.opti.set_initial(u,ug)
+                for f, fg in zip(self.fs, fs_g):
+                    fgc = []
+                    fgc.append(fg[0])
+                    fgc.append(fg[1])
+                    [self.opti.set_initial(f[i], fgc[i]) for i in range(len(f)) ]
+                print("Got warm start")
+            except:
+                print("Can't load warm start")
+
+        if self.solver == 'proxnlp':
+            xinit = self.pb_space.neutral()
+            try:
+                dxs_g = guess['dxs']
+                us_g = guess['us']
+                acs_g = guess['acs']
+                fs_g = guess['fs']
+                
+                x_guess = []
+                for i,g in enumerate([dxs_g, acs_g, us_g, fs_g]):
+                    if i != 3:
+                        x_tmp = np.concatenate([g, np.zeros((1, g.shape[1]))])
+                    else: # if loading forces
+                        x_tmp = np.concatenate([g, np.zeros((1,6))])
+                    x_guess.append(casadi.vertcat(*x_tmp))
+                    x_tmp = []
+                xinit = casadi.vertcat(*x_guess).full()[:, 0]
+                print("Got warm start")
+            except:
+                print("Can't load warm start")
+            
+            self.xinit = xinit
+            
     def get_results(self):
-        xs_sol = np.array([ self.opti.value(x) for x in self.xs ])
-        us_sol = np.array([ self.opti.value(u) for u in self.us ])
-        acs_sol = np.array([ self.opti.value(a) for a in self.acs ])
-        fsol = {name: [] for name in self.allContactIds}
-        fsol_to_ws = []
-        for t in range(self.T):
-            for i, (st_foot, sw_foot) in enumerate(\
-                zip(self.runningModels[t].contactIds, self.runningModels[t].freeIds )):
-                fsol[st_foot].append(self.opti.value(self.fs[t][i]))
-                fsol[sw_foot].append(np.zeros(3))
-            fsol_to_ws.append([self.opti.value(self.fs[t][i]) for i in range(len(self.fs[t]))])
-        for foot in fsol: fsol[foot] = np.array(fsol[foot])
+        if self.solver == 'ipopt':
+            dxs_sol = np.array([ self.opti.value(dx) for dx in self.dxs ])
+            xs_sol = np.array([ self.opti.value(x) for x in self.xs ])
+            us_sol = np.array([ self.opti.value(u) for u in self.us ])
+            acs_sol = np.array([ self.opti.value(a) for a in self.acs ])
+            fsol = {name: [] for name in self.allContactIds}
+            fsol_to_ws = []
+            for t in range(self.T):
+                for i, (st_foot, sw_foot) in enumerate(\
+                    zip(self.runningModels[t].contactIds, self.runningModels[t].freeIds )):
+                    fsol[st_foot].append(self.opti.value(self.fs[t][i]))
+                    fsol[sw_foot].append(np.zeros(3))
+                fsol_to_ws.append(np.concatenate([self.opti.value(self.fs[t][0]), self.opti.value(self.fs[t][1])]))
+            for foot in fsol: fsol[foot] = np.array(fsol[foot])
 
-        return xs_sol, acs_sol, us_sol, fsol_to_ws, fsol
+
+        if self.solver == 'proxnlp':
+            xopt = self.results.xopt
+            dxs_sol = xopt[:  self.flat_ndx]
+            acs_sol = xopt[self.flat_ndx : self.flat_ndx + self.flat_na]
+            us_sol = xopt[self.flat_ndx + self.flat_na: \
+                            self.flat_ndx + self.flat_na + self.flat_nu]
+            fs_sol = xopt[-self.flat_nf:]
+
+            dxs_sol = np.array(np.split(dxs_sol, self.T+1))
+            acs_sol = np.array(np.split(acs_sol, self.T))
+            us_sol = np.array(np.split(us_sol, self.T))
+
+            xs_sol = np.array([m.integrate(self.x0, dx).full()[:, 0] for m, dx in zip(self.runningModels + [self.terminalModel], dxs_sol)])
+            fsol_to_ws = np.split(fs_sol, self.T)
+
+        return dxs_sol, xs_sol, acs_sol, us_sol, fsol_to_ws
 
     def get_feet_position(self, xs_sol):
         feet_log = {i:[] for i in self.allContactIds}
@@ -335,14 +399,15 @@ class OCP():
 
             ineq.append(self.runningModels[t].constraint_swing_feet_ineq(x_ref=self.x_ref, k = conf.k)) 
             ineq.append(self.runningModels[t].constraint_standing_feet_ineq())
-            ineq.append(self.us[t] - self.effort_limit)
-            ineq.append(-self.us[t] - self.effort_limit)
+            #ineq.append(self.us[t] - self.effort_limit)
+            #ineq.append(-self.us[t] - self.effort_limit)
 
             totalcost += rcost
     
-        if (self.contactSequence[self.T] != self.contactSequence[self.T-1]): # If it is landing
+        """ if (self.contactSequence[self.T] != self.contactSequence[self.T-1]): # If it is landing
             print('Landing on ', str(self.terminalModel.contactIds)) 
-            eq.append(self.terminalModel.constraint_landing_feet_eq(self.x_ref))
+            eq.append(self.terminalModel.constraint_landing_feet_eq(self.x_ref)) """
+
         eq.append(self.xs[self.T][self.terminalModel.nq :])
 
         eq_constraints = casadi.vertcat(*eq)
@@ -391,14 +456,18 @@ class OCP():
 
         ### SOLVE
         opti.solve_limited()
-        print("b")
         
     def use_proxnlp_solver(self, guess):
-        xspace = MultibodyPhaseSpace(self.model)
-        pb_space = VectorSpace((self.T+1) * (xspace.ndx) + \
-                self.T*self.nv + \
-                self.T*self.nu +\
-                self.T*(2 * 3))
+
+        self.xspace = MultibodyPhaseSpace(self.model)
+
+        self.flat_ndx = (self.T + 1) * self.xspace.ndx
+        self.flat_na = self.T * self.nv
+        self.flat_nu = self.T * self.nu
+        self.flat_nf = self.T * (3 * 2)
+
+        self.pb_space = pb_space = VectorSpace(self.flat_ndx + self.flat_na + \
+            self.flat_nu + self.flat_nf)
 
         self.dxs = [casadi.SX.sym('dxs_' + str(i), model.ndx) for i, model in enumerate(self.runningModels + [self.terminalModel])]
         self.acs = [casadi.SX.sym('acs_' + str(i), model.nv) for i, model in enumerate(self.runningModels)]
@@ -438,12 +507,12 @@ class OCP():
         print("No. of variables  :", pb_space.nx)
         print("No. of constraints:", prob.total_constraint_dim)
         workspace = proxnlp.Workspace(pb_space.nx, pb_space.ndx, prob)
-        results = proxnlp.Results(pb_space.nx, prob)
+        self.results = proxnlp.Results(pb_space.nx, prob)
 
-        callback = proxnlp.helpers.HistoryCallback()
+        self.callback = proxnlp.helpers.HistoryCallback()
         tol = 1e-4
-        rho_init = 1e-7
-        mu_init = 0.005
+        rho_init = 1e-6
+        mu_init = 1e-3
 
         solver = proxnlp.Solver(
             pb_space,
@@ -451,19 +520,25 @@ class OCP():
             mu_init=mu_init,
             rho_init=rho_init,
             tol=tol,
+            #mu_factor=0.01,
+            #dual_alpha=0.5,
+            #prim_alpha=0.5,
             verbose=proxnlp.VERBOSE,
         )
-        solver.register_callback(callback)
+        solver.register_callback(self.callback)
         solver.maxiters = 1000
         solver.use_gauss_newton = True
 
-        opt_init = pb_space.neutral()
-        lams0 = [np.zeros(cs.nr) for cs in constraints]
+        self.xinit = pb_space.neutral()
+        self.lams = [np.zeros(cs.nr) for cs in constraints]
+        self.warmstart(guess)
 
         try:
-            flag = solver.solve(workspace, results, opt_init, lams0)
+            flag = solver.solve(workspace, self.results, self.xinit, self.lams)
         except KeyboardInterrupt as e:
             pass
+
+        print(self.results)
 
     def solve(self, guess=None):
 

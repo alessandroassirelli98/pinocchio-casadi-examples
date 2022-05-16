@@ -20,7 +20,6 @@ import ocp as optimalControlProblem
 import ocp_parameters_conf as conf
 
 import proxnlp
-from proxnlp.manifolds import MultibodyPhaseSpace, VectorSpace
 from proxnlp.utils import CasadiFunction, plot_pd_errs
 
 
@@ -29,9 +28,10 @@ path = os.getcwd()
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
+solver = 'proxnlp'
 dt = conf.dt
-timestep_per_phase = 12
-v_lin_target = np.array([3, 0, 0])
+timestep_per_phase = 10
+v_lin_target = np.array([2, 0, 0])
 v_ang_target = np.array([0, 0, 0])
 
 ### LOAD AND DISPLAY SOLO
@@ -67,37 +67,51 @@ gait = [] \
     + [ [ 1,0,0,1 ] ] * timestep_per_phase  \
     + [ [ 0,1,1,0 ] ] * timestep_per_phase
 
-gait = gait*2
+gait = gait
 
+residuals_log = {'inf_pr': [], 'inf_du': []}
 
 
 ocp = optimalControlProblem.OCP(robot=robot ,gait=gait, x0=x0, x_ref=x0, u_ref=u0, \
-    v_lin_target=v_lin_target, v_ang_target=v_ang_target, solver= 'ipopt' )
+    v_lin_target=v_lin_target, v_ang_target=v_ang_target, solver= solver )
 
 """ allContactIds = ocp.allContactIds
 contactNames = ocp.contactNames """
 
 warmstart = {'xs': [], 'acs': [], 'us':[], 'fs': []}
 
-""" guess = np.load(os.getcwd() + "/sol.npy",allow_pickle=True).item()
-warmstart['xs'] = guess['xs']
-warmstart['acs'] = guess['acs']
-warmstart['us'] = guess['us']
-warmstart['fs'] = guess['fs'] """
-
-""" feet_log = {i:[] for i in allContactIds}
-residuals_log = {'inf_pr': [], 'inf_du': []}
-ocp_times = []
-ocp_predictions = [] """
+""" guess = np.load(os.getcwd() + "/solo/solo-walking/sol.npy",allow_pickle=True).item()
+warmstart['dxs'] = guess['dxs'][1:]
+warmstart['xs'] = guess['xs'][1:]
+warmstart['acs'] = guess['acs'][1:]
+warmstart['us'] = guess['us'][1:]
+warmstart['fs'] = guess['fs'][1:] """
 
 ocp.solve(guess=warmstart)
-x, a, u, f, _ = ocp.get_results()  
+dx, x, a, u, f, = ocp.get_results()  
 q_sol = x[:, : robot.nq]
 
 viz.play(q_sol.T, dt)
 
-np.save(open(os.getcwd() + '/sol.npy', "wb"),
+
+if solver == 'ipopt':
+    [residuals_log[key].append(ocp.opti.stats()['iterations'][key]) for key in residuals_log]
+    plt.figure(figsize=(12, 6), dpi = 90)
+    plt.title('Residuals IPOPT')
+    plt.semilogy(residuals_log['inf_du'][0])
+    plt.semilogy(residuals_log['inf_pr'][0])
+    plt.legend(['dual', 'primal'])
+
+elif solver == 'proxnlp':
+    axes = plt.axes()
+    plot_pd_errs(axes, ocp.callback.storage.prim_infeas, ocp.callback.storage.dual_infeas )
+
+plt.show()
+
+
+np.save(open(os.getcwd() + '/solo/solo-walking/sol.npy', "wb"),
         {
+            "dxs": dx,
             "xs": x,
             "us": u,
             "acs": a,
