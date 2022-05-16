@@ -10,9 +10,10 @@ path = os.getcwd()
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
+solver = 'ipopt'
 dt = conf.dt
-timestep_per_phase = 12
-horizon = 36
+timestep_per_phase = 15
+horizon = 67
 v_lin_target = np.array([1, 0, 0])
 v_ang_target = np.array([0, 0, 0])
 
@@ -54,7 +55,8 @@ for i in range(horizon):
 
     ocp = optimalControlProblem.OCP(robot=robot, gait=gait, x0=x_mpc[-1], x_ref=x0,\
                                         u_ref = u0, v_lin_target=v_lin_target, \
-                                        v_ang_target=v_ang_target, solver='ipopt')
+                                        v_ang_target=v_ang_target, solver=solver)
+                                        
     if i == 0:
         allContactIds = ocp.allContactIds
         contactNames = ocp.contactNames
@@ -63,7 +65,7 @@ for i in range(horizon):
     ocp.solve(guess=warmstart)
     print('OCP time: ', ocp.iterationTime)
     
-    x, a, u, f, _ = ocp.get_results()  
+    dx, x, a, u, f = ocp.get_results()  
 
     ocp_feet_log = ocp.get_feet_position(x)
     ocp_predictions.append(ocp.get_base_log(x))
@@ -73,13 +75,7 @@ for i in range(horizon):
 
     x_mpc.append(x[1])
     
-    """ warmstart['xs'] = np.append(x[1:], x[-1].reshape(1, -1), axis = 0)
-    warmstart['acs'] = np.append(a[1:], a[-1].reshape(1, -1), axis = 0)
-    warmstart['us'] = np.append(u[1:], u[-1].reshape(1, -1), axis = 0)
-    f.append(f[-1])
-    warmstart['fs'] = f[1:] """
-
-    
+    warmstart['dxs'] = dx[1:]
     warmstart['xs'] = x[1:]
     warmstart['acs'] = a[1:]
     warmstart['us'] = u[1:]
