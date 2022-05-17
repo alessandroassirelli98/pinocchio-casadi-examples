@@ -12,7 +12,7 @@ path = os.getcwd()
 # Hyperparameters defining the optimal control problem.
 solver = 'ipopt'
 dt = conf.dt
-timestep_per_phase = 66
+timestep_per_phase = 120
 horizon = 1
 robot = robex.load('solo12')
 nq, nv = robot.model.nq, robot.model.nv
@@ -26,9 +26,9 @@ FR_foot0 = np.array([0.1946, -0.16891, 0.0191028])
 
 # Create target for free foot
 target = []
-A = np.array([0, 0.05, 0.05])
-offset = np.array([0.15, 0, 0.1])
-freq = np.array([0, 1, 1])
+A = np.array([0, 0.1, 0.1])
+offset = np.array([0.15, 0, 0.15])
+freq = np.array([0, 2, 2])
 phase = np.array([0,0,np.pi/2])
 for t in range(timestep_per_phase): target += [FR_foot0 + offset + \
                                             A*np.sin(2*np.pi*freq * t*dt + phase)]

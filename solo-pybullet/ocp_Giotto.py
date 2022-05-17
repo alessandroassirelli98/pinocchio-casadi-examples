@@ -214,7 +214,7 @@ class ShootingNode():
         self.cost += conf.base_reg_cost * casadi.sumsqr(self.x[3:7] - x_ref[3:7]) * self.dt
         #self.cost += conf.base_reg_cost * casadi.sumsqr( self.log3(self.baseRotation(self.x), self.baseRotation(x_ref)) ) * self.dt
         self.cost += conf.joints_reg_cost * casadi.sumsqr(self.x[7 : self.nq] - x_ref[7: self.nq]) *self.dt
-        #self.cost += conf.joints_vel_reg_cost * casadi.sumsqr(self.x[self.nq + 6: ] - x_ref[self.nq + 6 :]) *self.dt
+        self.cost += conf.joints_vel_reg_cost * casadi.sumsqr(self.x[self.nq + 6 :] - x_ref[self.nq + 6 :]) *self.dt
 
     def target_cost(self, target):
         #self.cost += casadi.sumsqr(conf.lin_vel_weight*(self.baseVelocityLin(self.x) - v_lin_target)) * self.dt
@@ -422,7 +422,7 @@ class OCP():
         
 
         p_opts = {}
-        s_opts = {#"tol": 1e-4,
+        s_opts = {"tol": 1e-4,
             #"acceptable_tol":1e-4,
             #"max_iter": 21,
             #"compl_inf_tol": 1e-2,
