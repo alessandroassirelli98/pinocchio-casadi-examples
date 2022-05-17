@@ -292,9 +292,9 @@ class OCP():
                 for a,ag in zip(self.acs,acs_g): self.opti.set_initial(a, ag)
                 for u,ug in zip(self.us,us_g): self.opti.set_initial(u,ug)
                 for f, fg in zip(self.fs, fs_g):
+                    fgsplit = np.split(fg, len(f))
                     fgc = []
-                    fgc.append(fg[0])
-                    fgc.append(fg[1])
+                    [fgc.append(f) for f in fgsplit]
                     [self.opti.set_initial(f[i], fgc[i]) for i in range(len(f)) ]
                 print("Got warm start")
             except:
