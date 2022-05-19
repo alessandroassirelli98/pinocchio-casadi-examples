@@ -16,11 +16,11 @@ path = os.getcwd()
 solver = 'ipopt'
 dt = conf.dt
 timestep_per_phase = 10
-horizon = 50
+horizon = 30
 
 realTimeSimulation = True
 enableGUI = True  # enable PyBullet GUI or not
-USE_BULLET = False
+USE_BULLET = True
 if not USE_BULLET: enableGUI = False
 robotId, solo, revoluteJointIndices = configure_simulation(dt, enableGUI)
 
@@ -50,6 +50,7 @@ x_p = np.array([ 3.81852412e-21, -5.06186889e-22,  2.32792750e-01,  1.57686364e-
         0.00000000e+00, -1.71537341e-16,  2.01958723e-16, -9.22225583e-17,
         1.71537341e-16, -3.02938084e-16,  9.25916364e-17,  0.00000000e+00,
        -1.00979361e-16])
+
 u0 = np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
                 0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
                 0.25720939, -0.51441314])  ### quasi-static for x0

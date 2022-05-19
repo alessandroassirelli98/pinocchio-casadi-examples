@@ -103,7 +103,7 @@ for foot in allContactIds: feet_vel_log[foot] = np.array(feet_vel_log[foot])
 
 ## Simulate in PyBullet
 for i in range(u.shape[0]):
-    device.joints.set_torques(u[i, :])
+    device.joints.set_torques(np.array([0.0, 0.022, 0.5] * 2 + [0.0, -0.022, -0.5] * 2))
     device.parse_sensor_data()
     device.Print()
     device.send_command_and_wait_end_of_cycle()
@@ -122,7 +122,6 @@ viz.play(q_sol.T, dt)
 
 
 
-""" 
 
 
 ### --------------------------------------------------- ###
@@ -183,4 +182,4 @@ for i in range(4):
 plt.draw()
 
 
-plt.plot() """
+plt.plot()

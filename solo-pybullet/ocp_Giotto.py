@@ -251,7 +251,7 @@ class ShootingNode():
         self.force_reg_cost()
         self.control_cost(u_ref)
         self.body_reg_cost(x_ref=x_ref)
-        self.st_feet_cost()
+        #self.st_feet_cost()
         #self.target_cost(target=target)
         # self.sw_feet_cost()
 
@@ -388,7 +388,7 @@ class OCP():
                                                       target=self.target[t])
 
             # Constraints
-            #eq.append(self.runningModels[t].constraint_standing_feet_eq())
+            eq.append(self.runningModels[t].constraint_standing_feet_eq())
             eq.append(self.runningModels[t].constraint_dynamics_eq())
             eq.append(self.runningModels[t].difference(
                 self.xs[t + 1], xnext) - np.zeros(2*self.runningModels[t].nv))

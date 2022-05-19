@@ -15,7 +15,7 @@ from initialization_simulation import configure_simulation, getPosVelJoints
 #  INITIALIZATION ##
 ####################
 
-dt = 0.002  # time step of the simulation
+dt = 0.015  # time step of the simulation
 # If True then we will sleep in the main loop to have a 1:1 ratio of (elapsed real time / elapsed time in the
 # simulation)
 realTimeSimulation = True
@@ -26,7 +26,6 @@ nq = solo.nq
 nv = solo.nv
 q0 = solo.q0[:nq]
 v0 = np.zeros(nv)
-
 
 ###############
 #  MAIN LOOP ##
@@ -48,6 +47,7 @@ for i in range(50000):  # run the simulation during dt * i_max seconds (simulati
 
 
     jointTorques = 5*(solo.q0- q[:, i])[7:] + 0.01 * (solo.v0- v[:, i])[6:]
+
     # Set control torques for all joints in PyBullet
     p.setJointMotorControlArray(robotId, revoluteJointIndices, controlMode=p.TORQUE_CONTROL, forces=jointTorques)
 
