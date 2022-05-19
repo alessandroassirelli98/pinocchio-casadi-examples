@@ -36,9 +36,9 @@ fs0 = [np.ones(3)*0, np.ones(3) *0]
 FR_foot0 = np.array([0.1946, -0.16891, 0.0191028])
 
 # Create target for free foot
-A = np.array([0, 0., 0.05])
+A = np.array([0, 0.05, 0.05])
 offset = np.array([0.15, 0, 0.05])
-freq = np.array([0, 1, 0])
+freq = np.array([0, 1, 1])
 phase = np.array([0,0,np.pi/2])
 
 try:
@@ -52,7 +52,7 @@ except:
 #     10       18        26        34
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
 gait = [] \
-    + [ [ 1,1,1,1 ] ] * timestep_per_phase
+    + [ [ 1,0,1,1 ] ] * timestep_per_phase
 
 
 

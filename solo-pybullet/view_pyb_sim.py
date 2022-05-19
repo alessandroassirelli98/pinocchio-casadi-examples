@@ -56,11 +56,14 @@ ocp_predictions = []
 data = np.load("/tmp/sol_mpc.npy",allow_pickle=True).item()
 u_mpc = data['u_mpc']
 
+""" u_mpc = np.zeros((10000, 12))
+u_mpc[:, 4] = 0.001
+ """
 
-q = np.zeros((nq, horizon))
-v = np.zeros((nv, horizon))
+q = np.zeros((nq, len(u_mpc)))
+v = np.zeros((nv, len(u_mpc)))
 
-for i in range(horizon):
+for i in range(len(u_mpc)-1):
     print('Iteration ', str(i), ' / ', str(horizon))
     if realTimeSimulation:
         t0 = time.time()

@@ -16,6 +16,9 @@ def configure_simulation(dt, enableGUI):
     # Start the client for PyBullet
     if enableGUI:
         physicsClient = p.connect(p.GUI)
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+        p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 1)
+
     else:
         physicsClient = p.connect(p.DIRECT)  # noqa
     # p.GUI for graphical version

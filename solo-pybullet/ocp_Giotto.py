@@ -224,7 +224,7 @@ class ShootingNode():
     def body_reg_cost(self, x_ref):
         self.cost += conf.base_reg_cost * \
             casadi.sumsqr(self.x[3:7] - x_ref[3:7]) * self.dt
-        #self.cost += conf.base_reg_cost * casadi.sumsqr( self.log3(self.baseRotation(self.x), self.baseRotation(x_ref)) ) * self.dt
+        self.cost += conf.base_translation_weight * casadi.sumsqr(self.baseTranslation(self.x) - self.baseTranslation(x_ref)) * self.dt
         self.cost += conf.joints_reg_cost * \
             casadi.sumsqr(self.x[7: self.nq] - x_ref[7: self.nq]) * self.dt
         self.cost += conf.joints_vel_reg_cost * \
@@ -244,6 +244,7 @@ class ShootingNode():
     def st_feet_cost(self):
         for stFoot in self.contactIds:
             self.cost += conf.stiff_contact_weight *casadi.sumsqr(self.afeet[stFoot](self.x, self.a)) * self.dt # stiff contact
+            self.cost += conf.stiff_contact_weight *casadi.sumsqr(self.vfeet[stFoot](self.x)) * self.dt # stiff contact
 
     def compute_cost(self, x_ref, u_ref, target):
         self.cost = 0
@@ -251,7 +252,7 @@ class ShootingNode():
         self.control_cost(u_ref)
         self.body_reg_cost(x_ref=x_ref)
         self.st_feet_cost()
-        # self.target_cost(target=target)
+        self.target_cost(target=target)
         # self.sw_feet_cost()
 
         return self.cost
