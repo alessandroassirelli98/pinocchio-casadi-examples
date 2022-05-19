@@ -252,7 +252,7 @@ class ShootingNode():
         self.control_cost(u_ref)
         self.body_reg_cost(x_ref=x_ref)
         self.st_feet_cost()
-        self.target_cost(target=target)
+        #self.target_cost(target=target)
         # self.sw_feet_cost()
 
         return self.cost
@@ -342,22 +342,6 @@ class OCP():
                     self.fs[t][j]) for j in range(len(self.terminalModel.contactIds))]))
             for foot in fsol:
                 fsol[foot] = np.array(fsol[foot])
-
-        if self.solver == 'proxnlp':
-            xopt = self.results.xopt
-            dxs_sol = xopt[:  self.flat_ndx]
-            acs_sol = xopt[self.flat_ndx: self.flat_ndx + self.flat_na]
-            us_sol = xopt[self.flat_ndx + self.flat_na:
-                          self.flat_ndx + self.flat_na + self.flat_nu]
-            fs_sol = xopt[-self.flat_nf:]
-
-            dxs_sol = np.array(np.split(dxs_sol, self.T+1))
-            acs_sol = np.array(np.split(acs_sol, self.T))
-            us_sol = np.array(np.split(us_sol, self.T))
-
-            xs_sol = np.array([m.integrate(self.x0, dx).full()[:, 0] for m, dx in zip(
-                self.runningModels + [self.terminalModel], dxs_sol)])
-            fsol_to_ws = np.split(fs_sol, self.T)
 
         return dxs_sol, xs_sol, acs_sol, us_sol, fsol_to_ws
 
@@ -464,99 +448,6 @@ class OCP():
         # SOLVE
         opti.solve_limited()
 
-    def use_proxnlp_solver(self, guess):
-
-        self.xspace = MultibodyPhaseSpace(self.model)
-
-        self.flat_ndx = (self.T + 1) * self.xspace.ndx
-        self.flat_na = self.T * self.nv
-        self.flat_nu = self.T * self.nu
-        self.flat_nf = self.T * (3 * 2)
-
-        self.pb_space = pb_space = VectorSpace(self.flat_ndx + self.flat_na +
-                                               self.flat_nu + self.flat_nf)
-
-        self.dxs = [casadi.SX.sym('dxs_' + str(i), model.ndx)
-                    for i, model in enumerate(self.runningModels + [self.terminalModel])]
-        self.acs = [casadi.SX.sym('acs_' + str(i), model.nv)
-                    for i, model in enumerate(self.runningModels)]
-        self.us = [casadi.SX.sym('u_' + str(i), model.nu)
-                   for i, model in enumerate(self.runningModels)]
-        self.xs = [m.integrate(self.x0, dx) for m, dx in zip(
-            self.runningModels+[self.terminalModel], self.dxs)]
-        self.fs = []
-        for i, m in enumerate(self.runningModels):
-            f_tmp = [casadi.SX.sym('fs_' + str(i) + '_' + str(_), 3)
-                     for _ in range(len(m.contactIds))]
-            self.fs.append(f_tmp)
-        self.fs = self.fs
-
-        fs_tmp = []
-        for f in self.fs:
-            fs_tmp.append(casadi.vertcat(*f))
-
-        dxs = casadi.vertcat(*self.dxs)
-        acs = casadi.vertcat(*self.acs)
-        us = casadi.vertcat(*self.us)
-        fs = casadi.vertcat(*fs_tmp)
-
-        XAUF = casadi.vertcat(dxs, acs, us, fs)
-        cost, eq_constraints, ineq_constraints = self.make_ocp()
-
-        cost_fun = CasadiFunction(
-            pb_space.nx, pb_space.ndx, cost, XAUF, use_hessian=True)
-        eq_fun = CasadiFunction(pb_space.nx, pb_space.ndx,
-                                eq_constraints, XAUF, use_hessian=False)
-        ineq_fun = CasadiFunction(
-            pb_space.nx, pb_space.ndx, ineq_constraints, XAUF, use_hessian=False)
-
-        cost_fun_ = proxnlp.costs.CostFromFunction(cost_fun)
-        eq_constr = proxnlp.constraints.create_equality_constraint(eq_fun)
-        ineq_constr = proxnlp.constraints.create_inequality_constraint(
-            ineq_fun)
-
-        constraints = []
-        constraints.append(eq_constr)
-        constraints.append(ineq_constr)
-
-        prob = proxnlp.Problem(cost_fun_, constraints)
-
-        print("No. of variables  :", pb_space.nx)
-        print("No. of constraints:", prob.total_constraint_dim)
-        workspace = proxnlp.Workspace(pb_space.nx, pb_space.ndx, prob)
-        self.results = proxnlp.Results(pb_space.nx, prob)
-
-        self.callback = proxnlp.helpers.HistoryCallback()
-        tol = 1e-4
-        rho_init = 1e-6
-        mu_init = 1e-3
-
-        solver = proxnlp.Solver(
-            pb_space,
-            prob,
-            mu_init=mu_init,
-            rho_init=rho_init,
-            tol=tol,
-            # mu_factor=0.01,
-            # dual_alpha=0.5,
-            # prim_alpha=0.5,
-            verbose=proxnlp.VERBOSE,
-        )
-        solver.register_callback(self.callback)
-        solver.maxiters = 1000
-        solver.use_gauss_newton = True
-
-        self.xinit = pb_space.neutral()
-        self.lams = [np.zeros(cs.nr) for cs in constraints]
-        self.warmstart(guess)
-
-        try:
-            flag = solver.solve(workspace, self.results, self.xinit, self.lams)
-        except KeyboardInterrupt as e:
-            pass
-
-        print(self.results)
-
     def solve(self, guess=None):
 
         self.runningModels = [
@@ -568,8 +459,5 @@ class OCP():
             print("Using IPOPT")
             self.use_ipopt_solver(guess)
 
-        if self.solver == 'proxnlp':
-            print("Using PROXNLP")
-            self.use_proxnlp_solver(guess)
 
         self.iterationTime = time() - start_time
