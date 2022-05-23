@@ -19,10 +19,10 @@ path = os.getcwd()
 
 
 class ShootingNode():
-    def __init__(self, cmodel, model, q0, allContactIds, contactIds, solver_type='ipopt'):
+    def __init__(self, cmodel, model, q0, allContactIds, contactIds, dt):
 
-        self.dt = conf.dt
-        self.solver_type = solver_type
+        self.dt = dt
+
         self.contactIds = contactIds
         self.freeIds = []
 
@@ -252,17 +252,13 @@ class ShootingNode():
         self.control_cost(u_ref)
         self.body_reg_cost(x_ref=x_ref)
         #self.st_feet_cost()
-        #self.target_cost(target=target)
-        # self.sw_feet_cost()
+        self.target_cost(target=target)
 
         return self.cost
 
 
 class OCP():
-    def __init__(self, robot, gait, x0, x_ref, u_ref, target, solver='ipopt'):
-
-        self.solver = solver
-
+    def __init__(self, robot, gait, x0, x_ref, u_ref, target, dt=0.015):
         self.robot = robot
         self.model = model = robot.model
         self.cmodel = cmodel = cpin.Model(robot.model)
@@ -275,6 +271,7 @@ class OCP():
         self.x_ref = x_ref
         self.u_ref = u_ref
         self.target = target
+        self.dt = dt
 
         self.T = len(gait) - 1
 
@@ -287,7 +284,7 @@ class OCP():
 
         self.contactSequence = [self.patternToId(p) for p in gait]
         self.casadiActionModels = {contacts: ShootingNode(cmodel=cmodel, model=model, q0=robot.q0, allContactIds=self.allContactIds,
-                                                          contactIds=contacts, solver_type=solver)
+                                                          contactIds=contacts, dt=self.dt)
                                    for contacts in set(self.contactSequence)}  # build the different shooting nodes
 
     def patternToId(self, gait):
@@ -297,51 +294,49 @@ class OCP():
         for g in guess:
             if guess[g] == []:
                 print("No warmstart provided")
-                return 0
+                return 0    
+        try:
+            xs_g = guess['xs']
+            us_g = guess['us']
+            acs_g = guess['acs']
+            fs_g = guess['fs']
 
-        if self.solver == 'ipopt':
-            try:
-                xs_g = guess['xs']
-                us_g = guess['us']
-                acs_g = guess['acs']
-                fs_g = guess['fs']
+            def xdiff(x1, x2):
+                nq = self.model.nq
+                return np.concatenate([
+                    pin.difference(self.model, x1[:nq], x2[:nq]), x2[nq:]-x1[nq:]])
 
-                def xdiff(x1, x2):
-                    nq = self.model.nq
-                    return np.concatenate([
-                        pin.difference(self.model, x1[:nq], x2[:nq]), x2[nq:]-x1[nq:]])
-
-                for x, xg in zip(self.dxs, xs_g):
-                    self.opti.set_initial(x, xdiff(self.x0, xg))
-                for a, ag in zip(self.acs, acs_g):
-                    self.opti.set_initial(a, ag)
-                for u, ug in zip(self.us, us_g):
-                    self.opti.set_initial(u, ug)
-                for f, fg in zip(self.fs, fs_g):
-                    fgsplit = np.split(fg, len(f))
-                    fgc = []
-                    [fgc.append(f) for f in fgsplit]
-                    [self.opti.set_initial(f[i], fgc[i])
-                     for i in range(len(f))]
-                print("Got warm start")
-            except:
-                print("Can't load warm start")
+            for x, xg in zip(self.dxs, xs_g):
+                self.opti.set_initial(x, xdiff(self.x0, xg))
+            for a, ag in zip(self.acs, acs_g):
+                self.opti.set_initial(a, ag)
+            for u, ug in zip(self.us, us_g):
+                self.opti.set_initial(u, ug)
+            for f, fg in zip(self.fs, fs_g):
+                fgsplit = np.split(fg, len(f))
+                fgc = []
+                [fgc.append(f) for f in fgsplit]
+                [self.opti.set_initial(f[i], fgc[i])
+                    for i in range(len(f))]
+            print("Got warm start")
+        except:
+            print("Can't load warm start")
 
     def get_results(self):
-        if self.solver == 'ipopt':
-            dxs_sol = np.array([self.opti.value(dx) for dx in self.dxs])
-            xs_sol = np.array([self.opti.value(x) for x in self.xs])
-            us_sol = np.array([self.opti.value(u) for u in self.us])
-            acs_sol = np.array([self.opti.value(a) for a in self.acs])
-            fsol = {name: [] for name in self.allContactIds}
-            fsol_to_ws = []
-            for t in range(self.T):
-                for i, st_foot in enumerate(self.runningModels[t].contactIds):
-                    fsol[st_foot].append(self.opti.value(self.fs[t][i]))
-                fsol_to_ws.append(np.concatenate([self.opti.value(
-                    self.fs[t][j]) for j in range(len(self.terminalModel.contactIds))]))
-            for foot in fsol:
-                fsol[foot] = np.array(fsol[foot])
+
+        dxs_sol = np.array([self.opti.value(dx) for dx in self.dxs])
+        xs_sol = np.array([self.opti.value(x) for x in self.xs])
+        us_sol = np.array([self.opti.value(u) for u in self.us])
+        acs_sol = np.array([self.opti.value(a) for a in self.acs])
+        fsol = {name: [] for name in self.allContactIds}
+        fsol_to_ws = []
+        for t in range(self.T):
+            for i, st_foot in enumerate(self.runningModels[t].contactIds):
+                fsol[st_foot].append(self.opti.value(self.fs[t][i]))
+            fsol_to_ws.append(np.concatenate([self.opti.value(
+                self.fs[t][j]) for j in range(len(self.terminalModel.contactIds))]))
+        for foot in fsol:
+            fsol[foot] = np.array(fsol[foot])
 
         return dxs_sol, xs_sol, acs_sol, us_sol, fsol_to_ws
 
@@ -455,9 +450,7 @@ class OCP():
         self.terminalModel = self.casadiActionModels[self.contactSequence[self.T]]
 
         start_time = time()
-        if self.solver == 'ipopt':
-            print("Using IPOPT")
-            self.use_ipopt_solver(guess)
+        self.use_ipopt_solver(guess)
 
 
         self.iterationTime = time() - start_time

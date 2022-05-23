@@ -8,7 +8,6 @@ from PyBulletSimulator import PyBulletSimulator
 from loader import Solo12
 
 # Functions to initialize the simulation and retrieve joints positions/velocities
-from initialization_simulation import configure_simulation, getPosVelJoints
 import matplotlib.pyplot as plt
 import os
 path = os.getcwd()
@@ -16,25 +15,41 @@ path = os.getcwd()
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
 solver = 'ipopt'
-dt = conf.dt
-timestep_per_phase = 40
+dt = 0.015
+timestep_per_phase = 50
+p_dt = 0.001
+t_init = 1
+step_init = int(t_init/p_dt)
 solo = Solo12()
 
 nq = solo.nq 
 nv = solo.nv
 q0 = solo.q0
+qj0 = q0[7:]
 v0 = np.zeros(nv)
+vj0 = v0[6:]
 x0 = np.concatenate([q0, v0])
-u0 = np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
-                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
-                0.25720939, -0.51441314])  ### quasi-static for x0
+u0 = np.array([-0.02613785, -0.2584939 ,  0.51698191,  0.02860206, -0.25719823,
+        0.51440234, -0.02613105,  0.25848988, -0.51698564,  0.02860886,
+        0.25720224, -0.51439861])
 
 fs0 = [np.ones(3)*0, np.ones(3) *0]
 FR_foot0 = np.array([0.1946, -0.16891, 0.0191028])
 
 
 device = PyBulletSimulator()
-device.Init(q0[7:], 0, True, True, conf.dt)
+device.Init(q0[7:], 0, True, True, p_dt)
+
+def put_on_ground(steps):
+    for i in range(steps):
+        device.parse_sensor_data()
+        q = device.joints.positions
+        v = device.joints.velocities
+
+        jointTorques = 5*(q0[7:]- q) + 0.5 * (np.zeros(12)- v)
+        device.joints.set_torques(jointTorques)
+
+        device.send_command_and_wait_end_of_cycle()
 
 
 # Create target for free foot
@@ -46,7 +61,7 @@ phase = np.array([0,0,np.pi/2])
 #     10       18        26        34
 # [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
 gait = [] \
-    + [ [ 1,1,1,1 ] ] * timestep_per_phase
+    + [ [ 1,0,1,1 ] ] * timestep_per_phase
 
 warmstart = {'xs': [], 'acs': [], 'us':[], 'fs': []}
 
@@ -65,7 +80,7 @@ target = np.array(target)
 
 
 ocp = optimalControlProblem.OCP(robot=solo, gait=gait, x0=x0, x_ref=x0.copy(),\
-                                    u_ref = u0, target = target, solver=solver)
+                                    u_ref = u0, target = target)
 
 
 allContactIds = ocp.allContactIds
@@ -94,20 +109,20 @@ for foot in allContactIds: feet_vel_log[foot] += [ocp_feet_vel_log[foot][:, :]]
 for foot in allContactIds: feet_log[foot] = np.array(feet_log[foot])
 for foot in allContactIds: feet_vel_log[foot] = np.array(feet_vel_log[foot])
 
-""" np.save(open('/tmp/sol_mpc.npy', "wb"),
-        {
-            "x": x,
-            "u": u,
-        })
- """
 
-## Simulate in PyBullet
-for i in range(u.shape[0]):
-    device.joints.set_torques(np.array([0.0, 0.022, 0.5] * 2 + [0.0, -0.022, -0.5] * 2))
-    device.parse_sensor_data()
-    device.Print()
-    device.send_command_and_wait_end_of_cycle()
+u_log = []
+# Constatnt torque between timesteps
+for i in range (u.shape[0]):
+    for _ in range(int(dt/p_dt)):
+        device.joints.set_position_gains(3)
+        device.joints.set_velocity_gains(0.1)
+        device.joints.set_desired_positions(q_des[i, :])
+        device.joints.set_desired_velocities(v_des[i, :])
+        device.joints.set_torques(u[i, :])
+        device.send_command_and_wait_end_of_cycle()
+        u_log.append(device.joints.measured_torques)
 
+u_log = np.array(u_log)
 ### Show in Gepetto gui
 try:
     viz = GepettoVisualizer(solo.model,solo.robot.collision_model, solo.robot.visual_model)
@@ -118,9 +133,6 @@ except:
     print("No viewer"  )
 
 viz.play(q_sol.T, dt)
-
-
-
 
 
 
@@ -170,16 +182,16 @@ for i in range(4):
     plt.legend(legend)
 plt.draw()
 
-legend = ['Hip', 'Shoulder', 'Knee']
+legend = ['Hip_opt', 'Shoulder_opt', 'Knee_opt', 'Hip_meas', 'Shoulder_meas', 'Knee_meas']
 plt.figure(figsize=(12, 6), dpi = 90)
 for i in range(4):
     plt.subplot(2,2,i+1)
     plt.title('Joint torques of ' + contactNames[i])
-    [plt.plot(u[:, (3*i+jj)]) for jj in range(3) ]
+    [plt.plot(u[:, (3*i+jj)], linestyle = '--') for jj in range(3) ]
+    [plt.plot(u_log[:, (3*i+jj)], linestyle = '--') for jj in range(3) ]
     plt.ylabel('Torque [N/m]')
     plt.xlabel('t[s]')
     plt.legend(legend)
 plt.draw()
-
 
 plt.plot()

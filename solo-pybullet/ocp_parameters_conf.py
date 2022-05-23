@@ -3,7 +3,6 @@ import example_robot_data as robex
 import pinocchio.casadi as cpin
 
 # OCP parameters
-dt = 0.015
 mu = 1
 kx = 30
 ky = 30
