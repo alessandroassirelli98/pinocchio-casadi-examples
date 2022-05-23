@@ -54,7 +54,7 @@ def put_on_ground(steps):
 
 # Create target for free foot
 A = np.array([0, 0.05, 0.05])
-offset = np.array([0.15, 0, 0.05])
+offset = np.array([0.1, 0, 0.05])
 freq = np.array([0, 1, 1])
 phase = np.array([0,0,np.pi/2])
 
@@ -120,7 +120,7 @@ for i in range (u.shape[0]):
         device.joints.set_desired_velocities(v_des[i, :])
         device.joints.set_torques(u[i, :])
         device.send_command_and_wait_end_of_cycle()
-        u_log.append(device.joints.measured_torques)
+        u_log.append(device.jointTorques)
 
 u_log = np.array(u_log)
 ### Show in Gepetto gui
@@ -187,7 +187,7 @@ plt.figure(figsize=(12, 6), dpi = 90)
 for i in range(4):
     plt.subplot(2,2,i+1)
     plt.title('Joint torques of ' + contactNames[i])
-    [plt.plot(u[:, (3*i+jj)], linestyle = '--') for jj in range(3) ]
+    #[plt.plot(u[:, (3*i+jj)], linestyle = '--') for jj in range(3) ]
     [plt.plot(u_log[:, (3*i+jj)], linestyle = '--') for jj in range(3) ]
     plt.ylabel('Torque [N/m]')
     plt.xlabel('t[s]')

@@ -175,8 +175,8 @@ class ShootingNode():
     def constraint_standing_feet_eq(self):
         eq = []
         for stFoot in self.contactIds:
-            eq.append(self.afeet[stFoot](self.x, self.a))  # stiff contact
-
+            #eq.append(self.afeet[stFoot](self.x, self.a))  # stiff contact
+            eq.append(self.afeet[stFoot](self.x, self.a) + 0.1*self.vfeet[stFoot](self.x) )
         return(casadi.vertcat(*eq))
 
     def constraint_standing_feet_ineq(self):
@@ -186,7 +186,7 @@ class ShootingNode():
             R = self.Rfeet[stFoot](self.x)
             f_ = self.fs[i]
             fw = R @ f_
-            ineq.append(-fw[2])
+            ineq.append(-fw[2] )
             ineq.append( fw[0] - conf.mu*fw[2] )
             ineq.append( -fw[0] - conf.mu*fw[2] )
             ineq.append(  fw[1] - conf.mu*fw[2] )
@@ -394,7 +394,8 @@ class OCP():
 
             totalcost += rcost
 
-        eq.append(self.xs[self.T][self.terminalModel.nq:])
+        #eq.append(self.xs[self.T][self.terminalModel.nq:])
+        totalcost += conf.terminal_cost * casadi.sumsqr(self.xs[self.T][self.terminalModel.nq:]) * self.dt
 
         eq_constraints = casadi.vertcat(*eq)
         ineq_constraints = casadi.vertcat(*ineq)
@@ -423,7 +424,7 @@ class OCP():
         opti.minimize(cost)
 
         opti.subject_to(eq_constraints == 0)
-        #opti.subject_to(ineq_constraints <= 0)
+        opti.subject_to(ineq_constraints <= 0)
 
         p_opts = {}
         s_opts = { "tol": 1e-4,
