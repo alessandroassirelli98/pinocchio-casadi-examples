@@ -9,11 +9,6 @@ import ocp_parameters_conf as conf
 from time import time
 import os
 
-import proxnlp
-from proxnlp.manifolds import MultibodyPhaseSpace, VectorSpace
-from proxnlp.utils import CasadiFunction, plot_pd_errs
-
-
 plt.style.use('seaborn')
 path = os.getcwd()
 
@@ -176,7 +171,7 @@ class ShootingNode():
         eq = []
         for stFoot in self.contactIds:
             #eq.append(self.afeet[stFoot](self.x, self.a))  # stiff contact
-            eq.append(self.afeet[stFoot](self.x, self.a) + 0.1*self.vfeet[stFoot](self.x) )
+            eq.append(self.afeet[stFoot](self.x, self.a) + 1e-3*self.vfeet[stFoot](self.x) )
         return(casadi.vertcat(*eq))
 
     def constraint_standing_feet_ineq(self):
@@ -186,7 +181,7 @@ class ShootingNode():
             R = self.Rfeet[stFoot](self.x)
             f_ = self.fs[i]
             fw = R @ f_
-            ineq.append(-fw[2] )
+            ineq.append( -fw[2] + self.robotweight/6)
             ineq.append( fw[0] - conf.mu*fw[2] )
             ineq.append( -fw[0] - conf.mu*fw[2] )
             ineq.append(  fw[1] - conf.mu*fw[2] )
@@ -199,14 +194,11 @@ class ShootingNode():
         eq.append(self.acc(self.x, self.tau, *self.fs) - self.a)
         return(casadi.vertcat(*eq))
 
-    def constraint_swing_feet_ineq(self, x_ref, k):
+    def constraint_swing_feet_ineq(self, x_ref):
         ineq = []
         for sw_foot in self.freeIds:
-            ineq.append(-self.feet[sw_foot](self.x)
-                        [2] + self.feet[sw_foot](x_ref)[2])
-            ineq.append(self.vfeet[sw_foot](self.x)[
-                        0:2] - k[0] * self.feet[sw_foot](self.x)[2])
-
+            ineq.append(-self.feet[sw_foot](self.x)[2] \
+                + self.feet[sw_foot](x_ref)[2])
         return(casadi.vertcat(*ineq))
 
     def force_reg_cost(self):
@@ -225,10 +217,8 @@ class ShootingNode():
         self.cost += conf.base_reg_cost * \
             casadi.sumsqr(self.x[3:7] - x_ref[3:7]) * self.dt
         self.cost += conf.base_translation_weight * casadi.sumsqr(self.baseTranslation(self.x) - self.baseTranslation(x_ref)) * self.dt
-        self.cost += conf.joints_reg_cost * \
-            casadi.sumsqr(self.x[7: self.nq] - x_ref[7: self.nq]) * self.dt
-        self.cost += conf.joints_vel_reg_cost * \
-            casadi.sumsqr(self.x[self.nq + 6:] - x_ref[self.nq + 6:]) * self.dt
+        self.cost += casadi.sumsqr(conf.joints_reg_cost *(self.x[7: self.nq] - x_ref[7: self.nq])) * self.dt
+        self.cost += casadi.sumsqr(conf.joints_vel_reg_cost *( self.x[self.nq + 6:] - x_ref[self.nq + 6:])) * self.dt
 
     def target_cost(self, target):
         #self.cost += casadi.sumsqr(conf.lin_vel_weight*(self.baseVelocityLin(self.x) - v_lin_target)) * self.dt
@@ -239,7 +229,7 @@ class ShootingNode():
     def sw_feet_cost(self):
         for sw_foot in self.freeIds:
             self.cost += conf.sw_feet_reg_cost * \
-                casadi.sumsqr(self.vfeet[sw_foot](self.x)[0:2]) * self.dt
+                casadi.sumsqr(self.feet[sw_foot](self.x)[0:2]) * self.dt
     
     def st_feet_cost(self):
         for stFoot in self.contactIds:
@@ -252,7 +242,7 @@ class ShootingNode():
         self.control_cost(u_ref)
         self.body_reg_cost(x_ref=x_ref)
         #self.st_feet_cost()
-        self.target_cost(target=target)
+        #self.target_cost(target=target)
 
         return self.cost
 
@@ -261,6 +251,7 @@ class OCP():
     def __init__(self, robot, gait, x0, x_ref, u_ref, target, dt=0.015):
         self.robot = robot
         self.model = model = robot.model
+        self.data = model.createData()
         self.cmodel = cmodel = cpin.Model(robot.model)
 
         self.nq = robot.nq
@@ -329,16 +320,24 @@ class OCP():
         us_sol = np.array([self.opti.value(u) for u in self.us])
         acs_sol = np.array([self.opti.value(a) for a in self.acs])
         fsol = {name: [] for name in self.allContactIds}
+        fs_world = {name: [] for name in self.allContactIds}
         fsol_to_ws = []
         for t in range(self.T):
             for i, st_foot in enumerate(self.runningModels[t].contactIds):
                 fsol[st_foot].append(self.opti.value(self.fs[t][i]))
+            for i, sw_foot in enumerate(self.runningModels[t].freeIds):
+                fsol[sw_foot].append(np.zeros(3))
+
             fsol_to_ws.append(np.concatenate([self.opti.value(
                 self.fs[t][j]) for j in range(len(self.terminalModel.contactIds))]))
-        for foot in fsol:
-            fsol[foot] = np.array(fsol[foot])
+            
+            pin.framesForwardKinematics(self.model, self.data, xs_sol[t, : self.nq])
+            [fs_world[foot].append(self.data.oMf[foot].rotation @ fsol[foot][t]) for foot in fs_world]
 
-        return dxs_sol, xs_sol, acs_sol, us_sol, fsol_to_ws
+        for foot in fs_world:
+            fs_world[foot] = np.array(fs_world[foot])
+
+        return dxs_sol, xs_sol, acs_sol, us_sol, fsol_to_ws, fs_world
 
     def get_feet_position(self, xs_sol):
         feet_log = {i: [] for i in self.allContactIds}
@@ -389,8 +388,9 @@ class OCP():
                 self.xs[t + 1], xnext) - np.zeros(2*self.runningModels[t].nv))
 
             ineq.append(self.runningModels[t].constraint_standing_feet_ineq())
-            ineq.append(self.us[t] - self.effort_limit)
-            ineq.append(-self.us[t] - self.effort_limit)
+            ineq.append(self.runningModels[t].constraint_swing_feet_ineq(self.x_ref))
+            #ineq.append(self.us[t] - self.effort_limit)
+            #ineq.append(-self.us[t] - self.effort_limit)
 
             totalcost += rcost
 
