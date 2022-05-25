@@ -170,8 +170,8 @@ class ShootingNode():
     def constraint_standing_feet_eq(self):
         eq = []
         for stFoot in self.contactIds:
-            #eq.append(self.afeet[stFoot](self.x, self.a))  # stiff contact
-            eq.append(self.afeet[stFoot](self.x, self.a) + 1e-3*self.vfeet[stFoot](self.x) )
+            eq.append(self.afeet[stFoot](self.x, self.a))  # stiff contact
+            #eq.append(self.afeet[stFoot](self.x, self.a) + 1e-3*self.vfeet[stFoot](self.x) )
         return(casadi.vertcat(*eq))
 
     def constraint_standing_feet_ineq(self):
@@ -181,7 +181,7 @@ class ShootingNode():
             R = self.Rfeet[stFoot](self.x)
             f_ = self.fs[i]
             fw = R @ f_
-            ineq.append( -fw[2] + self.robotweight/6)
+            ineq.append( -fw[2] + self.robotweight/12)
             ineq.append( fw[0] - conf.mu*fw[2] )
             ineq.append( -fw[0] - conf.mu*fw[2] )
             ineq.append(  fw[1] - conf.mu*fw[2] )
@@ -242,7 +242,7 @@ class ShootingNode():
         self.control_cost(u_ref)
         self.body_reg_cost(x_ref=x_ref)
         #self.st_feet_cost()
-        #self.target_cost(target=target)
+        self.target_cost(target=target)
 
         return self.cost
 
@@ -394,8 +394,8 @@ class OCP():
 
             totalcost += rcost
 
-        #eq.append(self.xs[self.T][self.terminalModel.nq:])
-        totalcost += conf.terminal_cost * casadi.sumsqr(self.xs[self.T][self.terminalModel.nq:]) * self.dt
+        eq.append(self.xs[self.T][self.terminalModel.nq:])
+        #totalcost += conf.terminal_cost * casadi.sumsqr(self.xs[self.T][self.terminalModel.nq:]) * self.dt
 
         eq_constraints = casadi.vertcat(*eq)
         ineq_constraints = casadi.vertcat(*ineq)

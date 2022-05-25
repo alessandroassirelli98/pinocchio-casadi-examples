@@ -4,7 +4,7 @@ import pinocchio.casadi as cpin
 
 # OCP parameters
 dt = 0.015
-mu = 1
+mu = 0.8
 kx = 30
 ky = 30
 k = np.array([kx, ky])

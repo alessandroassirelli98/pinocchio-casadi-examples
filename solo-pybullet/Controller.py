@@ -1,6 +1,6 @@
 from utils.loader import Solo12
 import numpy as np
-import ocp_Giotto as optimalControlProblem
+import ocp as optimalControlProblem
 
 class Results:
     def __init__(self):
@@ -14,9 +14,10 @@ class Results:
 
 
 class Controller:
-    def __init__(self, n_nodes, dt):
+    def __init__(self, init_steps, target_steps, dt):
         self.dt = dt
-        self.n_nodes = n_nodes
+        self.init_steps = init_steps
+        self.target_steps = target_steps
 
         self.solo = Solo12()
         self.results = Results()
@@ -34,25 +35,27 @@ class Controller:
         self.warmstart = {'xs': [], 'acs': [], 'us':[], 'fs': []}
 
         self.gait = [] \
-            + [ [ 1,0,1,1 ] ] * self.n_nodes
+            + [ [ 1,1,1,1 ] ] * init_steps \
+            + [ [ 1,0,1,1 ] ] * target_steps
 
     def create_target(self, t_):
         # Here we create the target of the control
         # FR Foot moving in a circular way
 
         FR_foot0 = np.array([0.1946, -0.16891, 0.0191028])
-        A = np.array([0, 0, 0])
-        offset = np.array([0., 0.05, 0.])
-        freq = np.array([0, 0, 0])
-        phase = np.array([0,0,0])
+        A = np.array([0, 0.035, 0.035])
+        offset = np.array([0.05, 0., 0.06])
+        freq = np.array([0, 2.5, 2.5])
+        phase = np.array([0,0,np.pi/2])
 
         target = []
-        for t in range(self.n_nodes): target += [FR_foot0 + offset +A*np.sin(2*np.pi*freq * (t+t_)* self.dt + phase)]
+        #target += [FR_foot0] * self.init_steps
+        for t in range(self.init_steps + self.target_steps): target += [FR_foot0 + offset +A*np.sin(2*np.pi*freq * (t+t_)* self.dt + phase)]
         self.target = np.array(target)
 
     def compute_step(self, x0, x_ref, u_ref):
         self.ocp = optimalControlProblem.OCP(robot=self.solo, gait=self.gait, x0=x0, x_ref=x_ref,\
-                                    u_ref = u_ref, target = self.target, dt=self.dt)
+                                    u_ref = u_ref, target=self.target, dt=self.dt)
 
         self.ocp.solve(guess=self.warmstart)
         _, x, a, u, f, fw = self.ocp.get_results()  

@@ -4,8 +4,8 @@ import time
 import numpy as np
 from pinocchio.visualize import GepettoVisualizer
 import pybullet as p  # PyBullet simulator
-from PyBulletSimulator import PyBulletSimulator
-from loader import Solo12
+from utils.PyBulletSimulator import PyBulletSimulator
+from utils.loader import Solo12
 
 # Functions to initialize the simulation and retrieve joints positions/velocities
 import matplotlib.pyplot as plt
@@ -16,7 +16,7 @@ path = os.getcwd()
 # Hyperparameters defining the optimal control problem.
 solver = 'ipopt'
 dt = 0.015
-timestep_per_phase = 50
+timestep_per_phase = 80
 p_dt = 0.001
 t_init = 1
 step_init = int(t_init/p_dt)
@@ -40,21 +40,10 @@ FR_foot0 = np.array([0.1946, -0.16891, 0.0191028])
 device = PyBulletSimulator()
 device.Init(q0[7:], 0, True, True, p_dt)
 
-def put_on_ground(steps):
-    for i in range(steps):
-        device.parse_sensor_data()
-        q = device.joints.positions
-        v = device.joints.velocities
-
-        jointTorques = 5*(q0[7:]- q) + 0.5 * (np.zeros(12)- v)
-        device.joints.set_torques(jointTorques)
-
-        device.send_command_and_wait_end_of_cycle()
-
 
 # Create target for free foot
-A = np.array([0, 0.05, 0.05])
-offset = np.array([0.1, 0, 0.05])
+A = np.array([0, 0, 0.])
+offset = np.array([0, 0, 0])
 freq = np.array([0, 1, 1])
 phase = np.array([0,0,np.pi/2])
 
@@ -92,7 +81,7 @@ feet_vel_log = {i:[] for i in allContactIds}
 ocp.solve(guess=warmstart)
 print('OCP time: ', ocp.iterationTime)
 
-dx, x, a, u, f = ocp.get_results()  
+dx, x, a, u, f, fw = ocp.get_results()  
 
 q_des = x[:, 7: nq]
 v_des = x[:, nq + 6: ]
@@ -110,12 +99,28 @@ for foot in allContactIds: feet_log[foot] = np.array(feet_log[foot])
 for foot in allContactIds: feet_vel_log[foot] = np.array(feet_vel_log[foot])
 
 
+def tuple_to_array(tup):
+    a = np.array([element for tupl in tup for element in tupl])
+    return a
+
+def read_state():
+    device.parse_sensor_data()
+    qj_m = device.joints.positions
+    vj_m = device.joints.velocities
+    bp_m = tuple_to_array(device.baseState)
+    bv_m = tuple_to_array(device.baseVel)
+    x_m = np.concatenate([bp_m, qj_m, bv_m, vj_m])
+
+    return {'qj_m': qj_m, 'vj_m': vj_m, 'x_m': x_m}
+
 u_log = []
+x_m_log = []
 # Constatnt torque between timesteps
 for i in range (u.shape[0]):
     for _ in range(int(dt/p_dt)):
-        device.joints.set_position_gains(3)
-        device.joints.set_velocity_gains(0.1)
+        x_m_log += [read_state()['x_m']]
+        device.joints.set_position_gains(2)
+        device.joints.set_velocity_gains(0.05)
         device.joints.set_desired_positions(q_des[i, :])
         device.joints.set_desired_velocities(v_des[i, :])
         device.joints.set_torques(u[i, :])
@@ -123,6 +128,9 @@ for i in range (u.shape[0]):
         u_log.append(device.jointTorques)
 
 u_log = np.array(u_log)
+x_m_log = np.array(x_m_log)
+
+feet_log_m = ocp.get_feet_position(x_m_log)
 ### Show in Gepetto gui
 try:
     viz = GepettoVisualizer(solo.model,solo.robot.collision_model, solo.robot.visual_model)
@@ -138,6 +146,7 @@ viz.play(q_sol.T, dt)
 
 ### --------------------------------------------------- ###
 
+t_scale = np.linspace(0, (ocp.T)*dt, ocp.T+1)
 t_scale = np.linspace(0, (ocp.T)*dt, ocp.T+1)
 
 
@@ -158,8 +167,9 @@ for i in range(3):
     for foot in ocp.terminalModel.freeIds:
         plt.subplot(3,1,i+1)
         plt.title('Foot position on ' + legend[i])
-        plt.plot(feet_log[foot][0, :, i])
-        plt.legend(['FR_foot', 'Ref'])
+        plt.plot(t_scale, feet_log[foot][0, :, i])
+        plt.plot(feet_log_m[foot][:, i])
+        plt.legend(['FR_OCP', 'FR_BULLET'])
 plt.draw()
 
 legend = ['x', 'y', 'z']
@@ -190,6 +200,17 @@ for i in range(4):
     #[plt.plot(u[:, (3*i+jj)], linestyle = '--') for jj in range(3) ]
     [plt.plot(u_log[:, (3*i+jj)], linestyle = '--') for jj in range(3) ]
     plt.ylabel('Torque [N/m]')
+    plt.xlabel('t[s]')
+    plt.legend(legend)
+plt.draw()
+
+legend = ['F_x', 'F_y', 'F_z']
+plt.figure(figsize=(12, 6), dpi = 90)
+for i, foot in enumerate(fw):
+    plt.subplot(2,2,i+1)
+    plt.title('Forces on ' + str(i))
+    [plt.plot(fw[foot][:, jj]) for jj in range(3) ]
+    plt.ylabel('Force [N]')
     plt.xlabel('t[s]')
     plt.legend(legend)
 plt.draw()

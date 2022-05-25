@@ -17,11 +17,9 @@ def Init_simulation(q_init):
     device.Init(q_init, 0, True, True, dt_sim)
     return device
 
-
 def tuple_to_array(tup):
     a = np.array([element for tupl in tup for element in tupl])
     return a
-
 
 def interpolate_traj(q_des, v_des):
     measures = read_state()
@@ -29,7 +27,6 @@ def interpolate_traj(q_des, v_des):
     vj_des_i = np.linspace(measures['vj_m'], v_des, r)
 
     return qj_des_i, vj_des_i
-
 
 def read_state():
     device.parse_sensor_data()
@@ -41,13 +38,11 @@ def read_state():
 
     return {'qj_m': qj_m, 'vj_m': vj_m, 'x_m': x_m}
 
-
 def store_measures(all=True):
     m = read_state()
     local_res.x_m += [m['x_m']]
     if all == True:
         local_res.tau += [device.jointTorques]
-
 
 def send_torques():
     u = ctrl.results.ocp_storage['us'][0]
@@ -65,19 +60,17 @@ def send_torques():
 
             store_measures()
 
-
 def control_loop(ctrl):
     measures = read_state()
 
     ctrl.create_target(0)
-    ctrl.compute_step(ctrl.x0, ctrl.x0, ctrl.u0)
+    ctrl.compute_step(measures['x_m'], measures['x_m'], ctrl.u0)
 
     send_torques()
 
 
-
 if __name__ == '__main__':
-    ctrl = Controller(30, dt_ocp)
+    ctrl = Controller(10, 60, dt_ocp)
     local_res = Results()
     device = Init_simulation(ctrl.qj0)
 
@@ -86,8 +79,6 @@ if __name__ == '__main__':
     p.stopStateLogging(0)
 
     local_res.x_m = np.array(local_res.x_m)
-
-
 
     try:
         viz = GepettoVisualizer(ctrl.solo.model,ctrl.solo.robot.collision_model, ctrl.solo.robot.visual_model)
@@ -102,9 +93,3 @@ if __name__ == '__main__':
 
 
     plot(ctrl, ctrl.results, local_res, 0.001)
-
-    np.save(open('/tmp/sol_mpc.npy', "wb"),
-            {
-            "u_mpc": local_res.tau
-
-            })
