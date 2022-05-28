@@ -36,7 +36,7 @@ DT = 0.010
 z_target = 1.05
 z_target = .8
 
-x_target = .3
+x_target = .25
 FOOT_SIZE = .05
 
 ### LOAD AND DISPLAY SOLO
@@ -158,7 +158,7 @@ so3_log = casadi.Function('so3_log', [var_R], [cpin.log3(var_R)])
 # The cost is a sole regularization of u**2
 class CasadiActionModel:
     dt = DT
-    def __init__(self,cmodel,contactIds):
+    def __init__(self,cmodel,activeContactIds):
         '''
         cmodel: casadi pinocchio model
         contactIds: list of contact frames IDs.
@@ -166,7 +166,7 @@ class CasadiActionModel:
     
         
         self.cmodel = cmodel
-        self.contactIds = contactIds
+        self.contactIds = activeContactIds
         
         self.cdata = cdata = cmodel.createData()
         nq,nv = cmodel.nq,cmodel.nv
@@ -176,7 +176,7 @@ class CasadiActionModel:
         self.nv = nv
         self.ntau = nv
 
-        self.u0, self.fs0 = torqueReg(model.q0,contactIds)
+        self.u0, self.fs0 = torqueReg(model.q0,self.contactIds)
         self.uerror = u0
         
         cx = casadi.SX.sym("x",self.nx,1)
@@ -192,10 +192,10 @@ class CasadiActionModel:
         ### Build force list for ABA
         forces = [ cpin.Force.Zero() for __j in self.cmodel.joints ]
         # I am supposing here that all contact frames are on separate joints. This is asserted below:
-        assert( len( set( [ cmodel.frames[idf].parentJoint for idf in contactIds ]) ) == len(contactIds) )
+        assert( len( set( [ cmodel.frames[idf].parentJoint for idf in self.contactIds ]) ) == len(self.contactIds) )
         for f,idf in zip(cfs,self.contactIds):
             # Contact forces introduced in ABA as spatial forces at joint frame.
-            print('force = ' ,f)
+            #print('force = ' ,f)
             forces[cmodel.frames[idf].parentJoint] = cmodel.frames[idf].placement * cpin.Force(f)
         self.forces = cpin.StdVec_Force()
         for f in forces:
@@ -225,19 +225,19 @@ class CasadiActionModel:
         # Base link position
         self.base_translation = casadi.Function('base_translation', [cx], [ cdata.oMf[baseId].translation ])
         # feet[c](x) =  position of the foot <c> at configuration q=x[:nq]
-        self.feet = [ casadi.Function('foot'+cmodel.frames[idf].name,
-                                      [cx],[self.cdata.oMf[idf].translation]) for idf in contactIds ]
+        self.feet = { idf: casadi.Function('foot'+cmodel.frames[idf].name,
+                                      [cx],[self.cdata.oMf[idf].translation]) for idf in contactIds }
         # Rfeet[c](x) =  orientation of the foot <c> at configuration q=x[:nq]
-        self.Rfeet = [ casadi.Function('Rfoot'+cmodel.frames[idf].name,
-                                       [cx],[self.cdata.oMf[idf].rotation]) for idf in contactIds ]
+        self.Rfeet = {idf: casadi.Function('Rfoot'+cmodel.frames[idf].name,
+                                       [cx],[self.cdata.oMf[idf].rotation]) for idf in contactIds }
         # vfeet[c](x) =  linear velocity of the foot <c> at configuration q=x[:nq] with vel v=x[nq:]
-        self.vfeet = [ casadi.Function('vfoot'+cmodel.frames[idf].name,
+        self.vfeet = {idf: casadi.Function('vfoot'+cmodel.frames[idf].name,
                                        [cx],[cpin.getFrameVelocity( cmodel,cdata,idf,pin.LOCAL_WORLD_ALIGNED ).vector])
-                       for idf in contactIds ]
+                       for idf in contactIds }
         # vfeet[c](x,a) =  linear acceleration of the foot <c> at configuration q=x[:nq] with vel v=x[nq:] and acceleration a
-        self.afeet = [ casadi.Function('afoot'+cmodel.frames[idf].name,
+        self.afeet = { idf: casadi.Function('afoot'+cmodel.frames[idf].name,
                                        [cx,ca],[cpin.getFrameAcceleration( cmodel,cdata,idf,pin.LOCAL_WORLD_ALIGNED ).vector])
-                       for idf in contactIds ]
+                       for idf in contactIds }
 
     def calc(self,x, u, a, fs, ocp):
         '''
@@ -262,8 +262,8 @@ class CasadiActionModel:
 
         # Cost functions:
         cost = 0
-        cost += 1e-4*casadi.sumsqr(u-self.u0) * self.dt
-        cost += 1e-2*casadi.sumsqr( self.difference(x,x0) ) * self.dt
+        #cost += 1e-4*casadi.sumsqr(u-self.u0) * self.dt
+        cost += 5e-2*casadi.sumsqr( self.difference(x,x0) ) * self.dt
         cost += 1e-1 * casadi.sumsqr(x[3:6]) # Keep base flat
         #cost += 1e-3*sum( [ casadi.sumsqr(f-fref) for f,fref in zip(fs,self.fs0) ] ) * self.dt
         #cost += 1e-2*sum( [ casadi.sumsqr(f-fref) for f,fref in zip(fs,self.fs0) ] ) * self.dt
@@ -272,25 +272,29 @@ class CasadiActionModel:
         cost += 1e-5*sum( [ casadi.sumsqr((f-fref)*force_importance) for f in fs ] ) * self.dt
         
         ### OCP additional constraints
-        for afoot in self.afeet:
-            ocp.subject_to( afoot(x,a) == 0 )
+        #for afoot in self.afeet:
+        for cid in self.contactIds:
+            ocp.subject_to( self.afeet[cid](x,a) == 0 )
             pass
             
-        for f,R in zip(fs,self.Rfeet):   # for cone constrains (flat terrain)
+        #for f,R in zip(fs,self.Rfeet):   # for cone constrains (flat terrain)
+        for f,cid in zip(fs,self.contactIds):
+            R = self.Rfeet[cid]
             fw = R(x) @ f[:3]
             tauw = R(x) @ f[3:]
             ocp.subject_to(fw[2]>=1)
             ocp.subject_to( tauw[:2]/fw[2] <= FOOT_SIZE )
             ocp.subject_to( tauw[:2]/fw[2] >= -FOOT_SIZE )
 
-        '''
         for fid in contactIds:
             if fid in self.contactIds: continue
-            print(f'Flying for fdi #{fid}')
-            ocp.subject_to( self.feet[fid].translation[2]>=0 )
-            ocp.subject_to( casadi.sumsqr(self.vfeet[fid][:2]) <= self.feet[fid].translation[2] )
-            '''
+            #print(f'Flying for fdi #{fid}')
+            ocp.subject_to( self.feet[fid](x)[2]>=0 )
+            ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2]) <= 50*self.feet[fid](x)[2] )
 
+            for cid in self.contactIds:
+                ocp.subject_to( casadi.sumsqr(self.feet[fid](x)[:2]-self.feet[cid](x)[:2]) >= .1**2)
+            
         return xnext,cost
 
 
@@ -302,6 +306,11 @@ class CasadiActionModel:
 contactPattern = [] \
     + [ [ 1,1 ] ] * 30 \
     + [ [ 1,0 ] ] * 50  \
+    + [ [ 1,1 ] ] * 10 \
+    + [ [ 0,1 ] ] * 50  \
+    + [ [ 1,1 ] ] * 10 \
+    + [ [ 1,0 ] ] * 50  \
+    + [ [ 1,1 ] ] * 10 \
     + [ [ 1,1 ] ] * 20 \
     + [ [ 1,1 ] ]
 T = len(contactPattern)-1
@@ -341,12 +350,17 @@ for t in range(T):
     for i,c in enumerate(runningModels[t].contactIds):
         if c not in runningModels[t-1].contactIds:
             print(f'Impact for foot {c} (contact #{i}) at time {t}')
-            opti.subject_to( runningModels[t].feet[i](xs[t])[2] == 0)
+            opti.subject_to( runningModels[t].feet[c](xs[t])[2] == 0)
+            opti.subject_to( runningModels[t].vfeet[c](xs[t]) == 0)
             #opti.subject_to( runningModels[t].Rfeet[i](xs[t])[:,2] == [0,0,1])
-            opti.subject_to( runningModels[t].Rfeet[i](xs[t])[0,2] == 0)
-            opti.subject_to( runningModels[t].Rfeet[i](xs[t])[1,2] == 0)
+            opti.subject_to( runningModels[t].Rfeet[c](xs[t])[0,2] == 0)
+            opti.subject_to( runningModels[t].Rfeet[c](xs[t])[1,2] == 0)
             #opti.subject_to( runningModels[t].Rfeet[i](xs[t])[2,2] == 1)
             #opti.subject_to( so3_log(runningModels[t].Rfeet[i](xs[t])) == 0)
+
+            MAIN_JOINTS = [ 0,1,3 ]
+            MAIN_JOINTS = [ i+7 for i in MAIN_JOINTS ] + [ i+13 for i in MAIN_JOINTS ]
+            totalcost +=  1e2*casadi.sumsqr( xs[t][MAIN_JOINTS] - model.q0[MAIN_JOINTS] )
             
         
 #opti.subject_to( xs[T-1][cmodel.nq:] == 0 ) # v_T = 0
@@ -373,8 +387,14 @@ def call(i):
 
 opti.callback(call)
 
-if True: ### Load warmstart from file
-    guess = np.load("/tmp/sol.npy",allow_pickle=True)[()]
+try:
+    GUESS_FILE = 'onestep.npy'
+    GUESS_FILE = 'twosteps.npy'
+    GUESS_FILE = None
+    GUESS_FILE = '/tmp/sol.npy'
+    #if True: ### Load warmstart from file
+    guess = np.load(GUESS_FILE,allow_pickle=True)[()]
+    t=0
     for dx,x_g in zip(dxs,guess['xs']):
         opti.set_initial(dx,np.concatenate([
             pin.difference(model,model.q0,x_g[:model.nq]),
@@ -387,7 +407,9 @@ if True: ### Load warmstart from file
         opti.set_initial(u,u_g)
     for ac,ac_g in zip(acs,guess['acs']):
         opti.set_initial(ac,ac_g)
-else:
+    print('Done with reading warm start from file')
+except:
+    print('Warm start from file failed, now building a quasistatic guess')
     for dx in dxs:
         opti.set_initial(dx,np.zeros(model.nv*2))
     for f,u,r in zip(fs,us,runningModels):
@@ -448,7 +470,7 @@ for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fs_sol,xs_
     vnext = v1+a*m.dt
     qnext = pin.integrate(model,q1,vnext*m.dt)
     xnext = np.concatenate([qnext,vnext])
-    assert( np.linalg.norm(xnext-x2) < 1e-6 )
+    assert( np.linalg.norm(xnext-x2) < 1e-5 )
 
 
     ### Check 0 velocity of contact points
@@ -458,7 +480,7 @@ for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fs_sol,xs_
         vf = pin.getFrameVelocity(model,data,idf)
         #assert( sum(vf.linear**2) < 1e-8 )
         af = pin.getFrameAcceleration(model,data,idf,pin.LOCAL_WORLD_ALIGNED).vector
-        assert( sum(af**2) < 1e-8 )
+        assert( sum(af**2) < 1e-5 )
 
 
 # Gather forces in world frame
@@ -508,7 +530,8 @@ plt.title('cop local')
 l_foot = np.array([ [-FOOT_SIZE,-FOOT_SIZE,0,1],[-FOOT_SIZE,FOOT_SIZE,0,1],[FOOT_SIZE,FOOT_SIZE,0,1],[FOOT_SIZE,-FOOT_SIZE,0,1],[-FOOT_SIZE,-FOOT_SIZE,0,1] ]).T
 for ifig,cid in enumerate(contactIds):
     plt.subplot(1,len(contactIds),ifig+1)
-    plt.axis([-.15,.45,-.3,.3])
+    ARENA_SIZE = .6
+    plt.axis([-ARENA_SIZE/4,ARENA_SIZE*3/4,-ARENA_SIZE/2,ARENA_SIZE/2])
     plt.xlabel(model.frames[cid].name)
     for t,r in enumerate(runningModels):
         if cid not in r.contactIds: continue
