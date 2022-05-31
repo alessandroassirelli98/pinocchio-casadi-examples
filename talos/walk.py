@@ -26,6 +26,9 @@ import numpy as np
 import example_robot_data as robex
 import matplotlib.pyplot as plt
 from numpy.linalg import norm,inv,pinv,svd,eig
+import talos_low
+import standard_config
+
 #plt.style.use('seaborn')
 pin.SE3.__repr__=pin.SE3.__str__
 np.set_printoptions(precision=2, linewidth=300, suppress=True,threshold=10000)
@@ -36,13 +39,13 @@ DT = 0.010
 z_target = 1.05
 z_target = .8
 
-x_target = .25
+x_target = .15
 FOOT_SIZE = .05
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
-robot = robex.load('talos_legs')
-
+#robot = robex.load('talos_legs')
+robot = talos_low.load()
 
 try:
     viz = pin.visualize.GepettoVisualizer(robot.model,robot.collision_model,robot.visual_model)
@@ -59,7 +62,7 @@ cmodel = cpin.Model(robot.model)
 data = model.createData()
 
 # Initial config, also used for warm start
-x0 = np.concatenate([robot.q0,np.zeros(model.nv)])
+x0 = np.concatenate([model.q0,np.zeros(model.nv)])
 # quasi static for x0, used for warm-start and regularization
 u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
@@ -69,6 +72,9 @@ contactIds = [ i for i,f in enumerate(cmodel.frames) if "sole_link" in f.name ]
 baseId = model.getFrameId('root_joint')
 pin.framesForwardKinematics(model,data,x0[:model.nq])
 robotweight = -sum([Y.mass for Y in model.inertias]) * model.gravity.linear[2]
+# Load key postures
+referencePostures,referenceTorques = standard_config.load(robot.model)
+
 
 # pin.forwardKinematics(model,data,model.q0)
 # fs0 = pin.StdVec_Force (model.njoints,pin.Force.Zero())
@@ -148,6 +154,22 @@ var_R_ref = casadi.SX.sym('R_ref', 3, 3)
 so3_diff = casadi.Function('so3_diff', [var_R, var_R_ref], [cpin.log3(var_R.T @ var_R_ref)])
 so3_log = casadi.Function('so3_log', [var_R], [cpin.log3(var_R)])
 
+###################################################################################################
+### TUNING ########################################################################################
+###################################################################################################
+basisQWeight = [0,0,0,50,50,1]
+legQWeight =  [3,3,1,2,1,1]
+torsoQWeight = [10,10]
+armQWeight = [3,3]
+basisVWeight = [0,0,3,3,3,1]
+legVWeight =  [1]*6
+torsoVWeight = [20]*2
+armVWeight = [2]*2
+
+STATE_WEIGHT = 1*np.array(  \
+    basisQWeight+legQWeight+legQWeight+armQWeight \
+    +basisVWeight+legVWeight+legVWeight+armVWeight)
+assert(len(STATE_WEIGHT)==model.nv*2)
 ########################################################################################################
 ### ACTION MODEL #######################################################################################
 ########################################################################################################
@@ -176,8 +198,12 @@ class CasadiActionModel:
         self.nv = nv
         self.ntau = nv
 
-        self.u0, self.fs0 = torqueReg(model.q0,self.contactIds)
+        #self.u0, self.fs0 = torqueReg(model.q0,self.contactIds)
         self.uerror = u0
+        tauref =referenceTorques[tuple(self.contactIds)]
+        assert(norm(tauref[:6])<1e-4)
+        self.u0 = tauref[6:].copy()
+        self.fs0 = [ np.array([0,0,robotweight/len(contactIds),0,0,0]) for __c in self.contactIds ]
         
         cx = casadi.SX.sym("x",self.nx,1)
         cq = casadi.SX.sym("q",cmodel.nq,1)
@@ -188,6 +214,7 @@ class CasadiActionModel:
         ctau = casadi.SX.sym("tau",self.ntau,1)
         cdx = casadi.SX.sym("dx",self.ndx,1)
         cfs = [ casadi.SX.sym("f"+cmodel.frames[idf].name,6,1) for idf in self.contactIds ]
+        cw = casadi.SX.sym("w",self.ndx,1)
         
         ### Build force list for ABA
         forces = [ cpin.Force.Zero() for __j in self.cmodel.joints ]
@@ -218,6 +245,9 @@ class CasadiActionModel:
         # Lie difference(x1,x2) = [ pin.difference(q1,q2),v2-v1 ]
         self.difference = casadi.Function('xminus', [cx,cx2],
                                           [ casadi.vertcat(cpin.difference(self.cmodel,cx2[:nq],cx[:nq]),
+                                                         cx2[nq:]-cx[nq:]) ])
+        self.wdifference = casadi.Function('xwminus', [cx,cx2,cw],
+                                           [ cw*casadi.vertcat(cpin.difference(self.cmodel,cx2[:nq],cx[:nq]),
                                                          cx2[nq:]-cx[nq:]) ])
 
         cpin.forwardKinematics(cmodel,cdata,cx[:nq],cx[nq:],ca)
@@ -263,13 +293,14 @@ class CasadiActionModel:
         # Cost functions:
         cost = 0
         #cost += 1e-4*casadi.sumsqr(u-self.u0) * self.dt
-        cost += 5e-2*casadi.sumsqr( self.difference(x,x0) ) * self.dt
+        cost += 5e-2*casadi.sumsqr( self.wdifference(x,x0,STATE_WEIGHT) ) * self.dt
         cost += 1e-1 * casadi.sumsqr(x[3:6]) # Keep base flat
         #cost += 1e-3*sum( [ casadi.sumsqr(f-fref) for f,fref in zip(fs,self.fs0) ] ) * self.dt
         #cost += 1e-2*sum( [ casadi.sumsqr(f-fref) for f,fref in zip(fs,self.fs0) ] ) * self.dt
         fref = np.array([ 0,0,robotweight/len(self.contactIds),0,0,0])
         force_importance = [1,1,.1,10,10,2]
         cost += 1e-5*sum( [ casadi.sumsqr((f-fref)*force_importance) for f in fs ] ) * self.dt
+        cost += 1e-4*sum( [ casadi.sumsqr((f*force_importance)[[0,1,3,4,5]]) for f in fs ] ) * self.dt
         
         ### OCP additional constraints
         #for afoot in self.afeet:
@@ -290,8 +321,11 @@ class CasadiActionModel:
             if fid in self.contactIds: continue
             #print(f'Flying for fdi #{fid}')
             ocp.subject_to( self.feet[fid](x)[2]>=0 )
-            ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2]) <= 50*self.feet[fid](x)[2] )
+            #ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2]) <= 50*self.feet[fid](x)[2] )
+            ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2])*1e-3 <= 1e4*self.feet[fid](x)[2]**4 )
+            #ocp.subject_to( casadi.norm_2(self.vfeet[fid](x)[:2]) <= 50000*self.feet[fid](x)[2]**2 )
 
+            ### Avoid collision between feet
             for cid in self.contactIds:
                 ocp.subject_to( casadi.sumsqr(self.feet[fid](x)[:2]-self.feet[cid](x)[:2]) >= .1**2)
             
@@ -306,11 +340,6 @@ class CasadiActionModel:
 contactPattern = [] \
     + [ [ 1,1 ] ] * 30 \
     + [ [ 1,0 ] ] * 50  \
-    + [ [ 1,1 ] ] * 10 \
-    + [ [ 0,1 ] ] * 50  \
-    + [ [ 1,1 ] ] * 10 \
-    + [ [ 1,0 ] ] * 50  \
-    + [ [ 1,1 ] ] * 10 \
     + [ [ 1,1 ] ] * 20 \
     + [ [ 1,1 ] ]
 T = len(contactPattern)-1
@@ -347,21 +376,55 @@ for t in range(T):
 
     totalcost += rcost
 
+    # Additional cost at impact
     for i,c in enumerate(runningModels[t].contactIds):
         if c not in runningModels[t-1].contactIds:
             print(f'Impact for foot {c} (contact #{i}) at time {t}')
-            opti.subject_to( runningModels[t].feet[c](xs[t])[2] == 0)
-            opti.subject_to( runningModels[t].vfeet[c](xs[t]) == 0)
+            opti.subject_to( runningModels[t].feet[c](xs[t])[2] == 0) # Altitude is 0
+            opti.subject_to( runningModels[t].vfeet[c](xs[t]) == 0)   # 6d velocity at impact is 0
             #opti.subject_to( runningModels[t].Rfeet[i](xs[t])[:,2] == [0,0,1])
-            opti.subject_to( runningModels[t].Rfeet[c](xs[t])[0,2] == 0)
-            opti.subject_to( runningModels[t].Rfeet[c](xs[t])[1,2] == 0)
+            opti.subject_to( runningModels[t].Rfeet[c](xs[t])[0,2] == 0) # No rotation on roll
+            opti.subject_to( runningModels[t].Rfeet[c](xs[t])[1,2] == 0) # No rotation on pitch
             #opti.subject_to( runningModels[t].Rfeet[i](xs[t])[2,2] == 1)
             #opti.subject_to( so3_log(runningModels[t].Rfeet[i](xs[t])) == 0)
 
+            # Keep main joints in standard configuration at impact.
             MAIN_JOINTS = [ 0,1,3 ]
             MAIN_JOINTS = [ i+7 for i in MAIN_JOINTS ] + [ i+13 for i in MAIN_JOINTS ]
             totalcost +=  1e2*casadi.sumsqr( xs[t][MAIN_JOINTS] - model.q0[MAIN_JOINTS] )
+
+    # Bandwidth cost
+    if t>1:
+        '''
+        tau'  = (1-alpha) tau + alpha ref      with alpha ~=~ 1 
+        '''
+        ALPHA = 0.99
+        
+        #totalcost += 1e-3*casadi.sumsqr((us[t][3:6]-(1-ALPHA)*us[t-1][3:6])/ALPHA - runningModels[t].u0[3:6])
+        #totalcost += 1e-3*casadi.sumsqr((us[t][8:12]-(1-ALPHA)*us[t-1][8:12])/ALPHA - runningModels[t].u0[8:12])
             
+### Tentative to smooth the forces
+for k,cid in enumerate(contactIds):
+    last = -10000
+    for t in range(T):
+        if contactPattern[t][k]==1:
+            w = 1e-2/(t+1-last)**2
+            if w<5e-7: continue
+            print(f'c={cid}:t={t}: in contact since {last} === w={w:.2f}')
+            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight ) * w
+        else:
+            last = t+1
+    last = 10000
+    for t in reversed(range(T)):
+        if contactPattern[t][k]==1:
+            w = 1e-2/(last-t+1)**2
+            if w<5e-7: continue
+            print(f'c={cid}:t={t}: in contact until {last} === w={w:.2f}')
+            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight ) * w
+        else:
+            last = t-1
+        
+
         
 #opti.subject_to( xs[T-1][cmodel.nq:] == 0 ) # v_T = 0
 #opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
@@ -428,7 +491,7 @@ except:
     
 dxs_sol = np.array([ opti.value(x) for x in dxs ])
 xs_sol = np.array([ opti.value(x) for x in xs ])
-q_sol = xs_sol[:,: robot.nq]
+q_sol = xs_sol[:,: model.nq]
 us_sol = np.array([ opti.value(u) for u in us ])
 acs_sol = np.array([ opti.value(a) for a in acs ])
 fs_sol = [ np.split(opti.value(f),f.shape[0]//6) for f in fs ]
@@ -542,7 +605,41 @@ for ifig,cid in enumerate(contactIds):
         plt.plot(w_cop[0],w_cop[1],'r.')
         w_foot = data.oMf[cid].homogeneous @ l_foot
         plt.plot(w_foot[0,:],w_foot[1,:],'grey')
-        
+
+plt.figure('forces')
+fs0plot=np.array(fs_sol0)
+plt.subplot(211)
+plt.plot(fs0plot[:,2])
+plt.xlabel(model.frames[contactIds[0]].name)
+plt.subplot(212)
+plt.plot(fs0plot[:,8])
+plt.xlabel(model.frames[contactIds[1]].name)
+
+plt.figure('foot')
+foottraj = []
+footvtraj = []
+for x in xs_sol:
+    pin.forwardKinematics(model,data,x[:model.nq],x[model.nq:])
+    pin.updateFramePlacements(model,data)
+    foottraj.append( np.concatenate([  data.oMf[cid].translation for cid in contactIds ]))
+    footvtraj.append( np.concatenate([  pin.getFrameVelocity(model,data,cid).vector for cid in contactIds ]))
+foottraj = np.array(foottraj)
+footvtraj = np.array(footvtraj)
+plt.subplot(211)
+hplot = []
+names = []
+for i,cid in enumerate(contactIds):
+    hplot.extend(plt.plot(foottraj[:,3*i+2]))
+    names.append(model.frames[cid].name)
+plt.legend(hplot,names)
+plt.ylabel('altitude')
+plt.subplot(212)
+hplot = []
+for i,cid in enumerate(contactIds):
+    hplot.extend(plt.plot(np.sqrt(np.sum(footvtraj[:,6*i:6*i+2]**2,1))))
+plt.legend(hplot,names)
+plt.ylabel('horz vel')
+   
 
 #plt.show()
 def save():
