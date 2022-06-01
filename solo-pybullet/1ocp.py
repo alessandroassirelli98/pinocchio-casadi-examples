@@ -1,5 +1,5 @@
 from utils.PyBulletSimulator import PyBulletSimulator
-from utils.plot_utils import plot
+from utils.plot_utils import plot_ocp
 import numpy as np
 from Controller import Controller, Results
 from pinocchio.visualize import GepettoVisualizer
@@ -64,19 +64,20 @@ def control_loop(ctrl):
     measures = read_state()
 
     ctrl.create_target(0)
-    ctrl.compute_step(measures['x_m'], measures['x_m'], ctrl.u0)
+    ctrl.compute_step(measures['x_m'], ctrl.x0, ctrl.u0)
 
     send_torques()
 
 
 if __name__ == '__main__':
-    ctrl = Controller(10, 60, dt_ocp)
+    ctrl = Controller(5, 50, dt_ocp)
     local_res = Results()
     device = Init_simulation(ctrl.qj0)
+    store_measures()
 
-    p.startStateLogging( p.STATE_LOGGING_VIDEO_MP4, 'video.mp4' )
+    #p.startStateLogging( p.STATE_LOGGING_VIDEO_MP4, 'video.mp4' )
     control_loop(ctrl)
-    p.stopStateLogging(0)
+    #p.stopStateLogging(0)
 
     local_res.x_m = np.array(local_res.x_m)
 
@@ -88,8 +89,8 @@ if __name__ == '__main__':
     except:
         print("No viewer"  )
 
-    viz.play(ctrl.results.ocp_storage['xs'][0][:, :19].T, dt_ocp) # SHOW OCP RESULTS
+    viz.play(ctrl.results.ocp_storage['xs'][1][:, :19].T, dt_ocp) # SHOW OCP RESULTS
     #viz.play(local_res.x_m[:, :19].T, dt_sim) # SHOW PYBULLET SIMULATION
 
 
-    plot(ctrl, ctrl.results, local_res, 0.001)
+    plot_ocp(ctrl, ctrl.results, local_res, 0.001)

@@ -329,7 +329,7 @@ class OCP():
                 fsol[sw_foot].append(np.zeros(3))
 
             fsol_to_ws.append(np.concatenate([self.opti.value(
-                self.fs[t][j]) for j in range(len(self.terminalModel.contactIds))]))
+                self.fs[t][j]) for j in range(len(self.runningModels[t].contactIds))]))
             
             pin.framesForwardKinematics(self.model, self.data, xs_sol[t, : self.nq])
             [fs_world[foot].append(self.data.oMf[foot].rotation @ fsol[foot][t]) for foot in fs_world]

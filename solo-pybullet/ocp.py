@@ -230,6 +230,8 @@ class OCP():
     def __init__(self, robot, gait, x0, x_ref, u_ref, target, dt = 0.015, solver='ipopt'):
         
         self.solver = solver
+        self.dt = dt
+
 
         self.robot = robot
         self.model = model = robot.model
@@ -243,8 +245,6 @@ class OCP():
         self.x0 = x0
         self.x_ref = x_ref
         self.u_ref = u_ref
-
-        self.dt = dt
 
         self.target = target
 
@@ -286,10 +286,10 @@ class OCP():
                 for a,ag in zip(self.acs,acs_g): self.opti.set_initial(a, ag)
                 for u,ug in zip(self.us,us_g): self.opti.set_initial(u,ug)
                 for f, fg in zip(self.fs, fs_g):
+                    fgsplit = np.split(fg, len(f))
                     fgc = []
-                    fgc.append(fg[0])
-                    fgc.append(fg[1])
-                    [self.opti.set_initial(f[i], fgc[i]) for i in range(len(f)) ]
+                    [fgc.append(f) for f in fgsplit]
+                    [self.opti.set_initial(f[i], fgc[i]) for i in range(len(f))]
                 print("Got warm start")
             except:
                 print("Can't load warm start")
@@ -332,7 +332,7 @@ class OCP():
                 fsol[sw_foot].append(np.zeros(3))
 
             fsol_to_ws.append(np.concatenate([self.opti.value(
-                self.fs[t][j]) for j in range(len(self.terminalModel.contactIds))]))
+                self.fs[t][j]) for j in range(len(self.runningModels[t].contactIds))]))
             
             pin.framesForwardKinematics(self.model, self.data, xs_sol[t, : self.nq])
             [fs_world[foot].append(self.data.oMf[foot].rotation @ fsol[foot][t]) for foot in fs_world]
@@ -370,8 +370,8 @@ class OCP():
             self.runningModels[t].init(self.xs[t], self.acs[t], self.us[t], self.fs[t])
 
             if (self.contactSequence[t] != self.contactSequence[t-1] and t >= 1): # If it is landing
-                print('Landing on ', str(self.runningModels[t].contactIds)) 
-                #eq.append(self.runningModels[t].constraint_landing_feet_eq(self.x_ref))
+                print('Contact on ', str(self.runningModels[t].contactIds)) 
+                
 
             xnext,rcost = self.runningModels[t].calc(x_ref=self.x_ref,u_ref=self.u_ref, target=self.target[t])
 
@@ -386,12 +386,9 @@ class OCP():
             #ineq.append(-self.us[t] - self.effort_limit)
 
             totalcost += rcost
-    
-        """ if (self.contactSequence[self.T] != self.contactSequence[self.T-1]): # If it is landing
-            print('Landing on ', str(self.terminalModel.contactIds)) 
-            eq.append(self.terminalModel.constraint_landing_feet_eq(self.x_ref)) """
 
-        eq.append(self.xs[self.T][self.terminalModel.nq :])
+        #eq.append(self.xs[self.T][self.terminalModel.nq :])
+        totalcost += conf.terminal_cost * casadi.sumsqr(self.xs[self.T][self.terminalModel.nq:]) * self.dt
 
         eq_constraints = casadi.vertcat(*eq)
         ineq_constraints = casadi.vertcat(*ineq)
@@ -423,8 +420,8 @@ class OCP():
         
 
         p_opts = {}
-        s_opts = {#"tol": 1e-4,
-            #"acceptable_tol":1e-4,
+        s_opts = {"tol": 1e-4,
+            "acceptable_tol":1e-4,
             #"max_iter": 21,
             #"compl_inf_tol": 1e-2,
             #"constr_viol_tol": 1e-2
