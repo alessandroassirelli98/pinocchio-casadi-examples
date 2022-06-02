@@ -65,7 +65,7 @@ def control_loop(ctrl):
         measures = read_state()
         
         ctrl.create_target(t)
-        ctrl.compute_step(measures['x_m'], ctrl.x0, ctrl.u0)
+        ctrl.compute_step(ctrl.results.ocp_storage['xs'][-1][1, :], ctrl.x0, ctrl.u0)
         ctrl.shift_gate()
 
         send_torques()       

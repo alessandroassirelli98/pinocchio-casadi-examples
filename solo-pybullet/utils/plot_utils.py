@@ -1,3 +1,4 @@
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -106,6 +107,12 @@ def plot_mpc(ctrl, ocp_results, local_results, dt_simu):
     all_ocp_feet_log = [ctrl.ocp.get_feet_position(x)[18] for x in ctrl.results.ocp_storage['xs']]
     all_ocp_feet_log = np.array(all_ocp_feet_log)
 
+    u_mpc = []
+    [u_mpc.append(ocp_results.ocp_storage['us'][i][1, :]) for i in range(horizon)]
+    u_mpc = np.array(u_mpc)
+    all_u_log = np.array(ocp_results.ocp_storage['us'])
+    u_m = np.array(local_results.tau)
+
     legend = ['x', 'y', 'z']
     plt.figure(figsize=(12, 6), dpi = 90)
     for i in range(3):
@@ -122,13 +129,28 @@ def plot_mpc(ctrl, ocp_results, local_results, dt_simu):
     for p in range(3):
         plt.subplot(3,1, p+1)
         plt.title('Free foot on ' + legend[p])
-        for i in range(horizon-1):
+        for i in range(horizon):
             t = np.linspace(i*ctrl.dt, (ctrl.ocp.T+ i)*ctrl.dt, ctrl.ocp.T+1)
             y = all_ocp_feet_log[i+1][:,p]
             for j in range(len(y) - 1):
                 plt.plot(t[j:j+2], y[j:j+2], color='royalblue', linewidth = 3, marker='o' ,alpha=max([1 - j/len(y), 0]))
         plt.plot(t_mpc, feet_log_mpc[18][:, p], linewidth=0.8, color = 'tomato', marker='o')
         plt.plot(t1, feet_log_m[18][:, p], linewidth=2, color = 'lightgreen')
+    plt.draw()
+
+
+    plt.figure(figsize=(12, 36), dpi = 90)
+    for p in range(12):
+        plt.subplot(12,1, p+1)
+        plt.title('u ' + str(p))
+        for i in range(horizon-1):
+            t = np.linspace(i*ctrl.dt, (ctrl.ocp.T+ i)*ctrl.dt, ctrl.ocp.T+1)
+            y = all_u_log[i][:,p]
+            for j in range(len(y) - 1):
+                plt.plot(t[j:j+2], y[j:j+2], color='royalblue', linewidth = 3, marker='o' ,alpha=max([1 - j/len(y), 0]))
+
+            plt.plot(t_mpc[:-1], u_mpc[:, p], linewidth=0.8, color = 'tomato', marker='o')
+            plt.plot(t1, u_m[:, p], linewidth=2, color = 'lightgreen')
     plt.draw()
 
 
