@@ -39,7 +39,7 @@ DT = 0.010
 z_target = 1.05
 z_target = .8
 
-x_target = .25
+x_target = .35
 FOOT_SIZE = .05
 
 ### LOAD AND DISPLAY SOLO
@@ -337,17 +337,17 @@ class CasadiActionModel:
         for fid in contactIds:
             if fid in self.contactIds: continue
             #print(f'Flying for fdi #{fid}')
-            #cost += casadi.sumsqr(self.vfeet[fid](x)[2])*.1
-            cost += casadi.sumsqr(self.vfeet[fid](x))*.1
+            cost += casadi.sumsqr(self.vfeet[fid](x)[2])*.1 ##D##
+            #cost += casadi.sumsqr(self.vfeet[fid](x))*.1 ##D##
             #cost += casadi.sumsqr(self.afeet[fid](x,a)[:3])*.01
             ocp.subject_to( self.feet[fid](x)[2]>=0 )
-            ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2]) <= 20*self.feet[fid](x)[2] ) ## 50 is best
+            ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2]) <= 50*self.feet[fid](x)[2] ) ## 50 is best
             #ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2])*1e-3 <= 1e4*self.feet[fid](x)[2]**4 )
             #ocp.subject_to( casadi.norm_2(self.vfeet[fid](x)[:2]) <= 50000*self.feet[fid](x)[2]**2 )
 
             ### Avoid collision between feet
             for cid in self.contactIds:
-               ocp.subject_to( casadi.sumsqr(self.feet[fid](x)[:2]-self.feet[cid](x)[:2]) >= .1**2)
+                ocp.subject_to( casadi.sumsqr(self.feet[fid](x)[:2]-self.feet[cid](x)[:2]) >= .1**2)
             
         return xnext,cost
 
@@ -458,14 +458,28 @@ for k,cid in enumerate(contactIds):
 #wfref,wfcont = 1e-1,5
 wfref,wfcont = 1e-2,1
 
-from weight_share import weightShareSmoothProfile,switch_tanh
-contactImportance = weightShareSmoothProfile(contactPattern,15,switch=switch_tanh)
+# Search the contact phase of minimal duration (typically double support)
+contactState=[]
+dur=mindur=len(contactPattern)
+for t,s in enumerate(contactPattern):
+    dur+=1
+    if s!=contactState:
+        contactState=s
+        mindur=min(mindur,dur)
+        dur=0
+        print(f'Change at {t}, phase duration={dur} (mindur={mindur}')
+# Select the smoothing transition to be smaller than half of the minimal duration.
+transDuration=(mindur-1)//2
+# Compute contact importance, ie how much of the weight should be supported by each
+# foot at each time.
+from weight_share import weightShareSmoothProfile,switch_tanh,switch_linear
+contactImportance = weightShareSmoothProfile(contactPattern,transDuration,switch=switch_linear)
+# Contact reference forces are set to contactimportance*weight
 weightReaction = np.array([0,0,robotweight,0,0,0])
-referenceForces = []
-for t in range(T):
-    referenceForces.append([
-        weightReaction*contactImportance[t,k] for k,__cid in enumerate(runningModels[t].contactIds)
-    ])
+referenceForces = [
+    [ weightReaction*contactImportance[t,contactIds.index(cid)] for cid in runningModels[t].contactIds ]
+      for t in range(T) ]
+# Take care, we suppose here that foot normal is vertical.
 
 ### Make forces track the reference (smooth) trajectory
 for t,(refs,r) in enumerate(zip(referenceForces,runningModels)):
