@@ -47,6 +47,16 @@ FOOT_SIZE = .05
 #robot = robex.load('talos_legs')
 robot = talos_low.load()
 
+contactIds = [ i for i,f in enumerate(robot.model.frames) if "sole_link" in f.name ]
+footLength=0.1
+for cid in contactIds:
+    f = robot.model.frames[cid]
+    robot.model.addFrame(
+        pin.Frame(f'{f.name}_tow',f.parentJoint,f.parentFrame,
+                  f.placement*pin.SE3(np.eye(3),np.array([.1,0,0])),pin.FrameType.OP_FRAME))
+    robot.model.addFrame(
+        pin.Frame(f'{f.name}_heel',f.parentJoint,f.parentFrame,
+                  f.placement*pin.SE3(np.eye(3),np.array([-.1,0,0])),pin.FrameType.OP_FRAME))
 try:
     viz = pin.visualize.GepettoVisualizer(robot.model,robot.collision_model,robot.visual_model)
     viz.initViewer()
@@ -68,7 +78,8 @@ u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
                0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
                0.25720939, -0.51441314])
 
-contactIds = [ i for i,f in enumerate(cmodel.frames) if "sole_link" in f.name ]
+towIds = { idf: model.getFrameId(f'{model.frames[idf].name}_tow') for idf in contactIds }
+heelIds = { idf: model.getFrameId(f'{model.frames[idf].name}_heel') for idf in contactIds }
 baseId = model.getFrameId('root_joint')
 pin.framesForwardKinematics(model,data,x0[:model.nq])
 robotweight = -sum([Y.mass for Y in model.inertias]) * model.gravity.linear[2]
@@ -267,12 +278,22 @@ class CasadiActionModel:
         # feet[c](x) =  position of the foot <c> at configuration q=x[:nq]
         self.feet = { idf: casadi.Function('foot'+cmodel.frames[idf].name,
                                       [cx],[self.cdata.oMf[idf].translation]) for idf in contactIds }
+        self.tows = { idf: casadi.Function('tow'+cmodel.frames[idf].name,
+                                      [cx],[self.cdata.oMf[towIds[idf]].translation]) for idf in contactIds }
+        self.heels = { idf: casadi.Function('heel'+cmodel.frames[idf].name,
+                                      [cx],[self.cdata.oMf[heelIds[idf]].translation]) for idf in contactIds }
         # Rfeet[c](x) =  orientation of the foot <c> at configuration q=x[:nq]
         self.Rfeet = {idf: casadi.Function('Rfoot'+cmodel.frames[idf].name,
                                        [cx],[self.cdata.oMf[idf].rotation]) for idf in contactIds }
         # vfeet[c](x) =  linear velocity of the foot <c> at configuration q=x[:nq] with vel v=x[nq:]
         self.vfeet = {idf: casadi.Function('vfoot'+cmodel.frames[idf].name,
                                        [cx],[cpin.getFrameVelocity( cmodel,cdata,idf,pin.LOCAL_WORLD_ALIGNED ).vector])
+                       for idf in contactIds }
+        self.vtows = { idf: casadi.Function('vtow'+cmodel.frames[idf].name,
+                                       [cx],[cpin.getFrameVelocity( cmodel,cdata,towIds[idf],pin.LOCAL_WORLD_ALIGNED ).vector])
+                       for idf in contactIds }
+        self.vheels = { idf: casadi.Function('vheel'+cmodel.frames[idf].name,
+                                       [cx],[cpin.getFrameVelocity( cmodel,cdata,heelIds[idf],pin.LOCAL_WORLD_ALIGNED ).vector])
                        for idf in contactIds }
         # vfeet[c](x,a) =  linear acceleration of the foot <c> at configuration q=x[:nq] with vel v=x[nq:] and acceleration a
         self.afeet = { idf: casadi.Function('afoot'+cmodel.frames[idf].name,
@@ -333,6 +354,8 @@ class CasadiActionModel:
             ocp.subject_to(fw[2]>=1)
             ocp.subject_to( tauw[:2]/fw[2] <= FOOT_SIZE )
             ocp.subject_to( tauw[:2]/fw[2] >= -FOOT_SIZE )
+            # Minimize COP deviation as well
+            cost += 1e-2*casadi.sumsqr(tauw[:2]/fw[2]/FOOT_SIZE)
 
         for fid in contactIds:
             if fid in self.contactIds: continue
@@ -341,7 +364,9 @@ class CasadiActionModel:
             #cost += casadi.sumsqr(self.vfeet[fid](x))*.1 ##D##
             #cost += casadi.sumsqr(self.afeet[fid](x,a)[:3])*.01
             ocp.subject_to( self.feet[fid](x)[2]>=0 )
-            ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2]) <= 50*self.feet[fid](x)[2] ) ## 50 is best
+            ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2]) <= (self.feet[fid](x)[2]/3e-2) ) ## 50 is best
+            ocp.subject_to( casadi.sumsqr(self.vtows[fid](x)[:2]) <= (self.tows[fid](x)[2]/3e-2)) ## 50 is best
+            #ocp.subject_to( casadi.sumsqr(self.vheels[fid](x)[:2]) <= (self.heels[fid](x)[2]/1e-2)**2) ## 50 is best
             #ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2])*1e-3 <= 1e4*self.feet[fid](x)[2]**4 )
             #ocp.subject_to( casadi.norm_2(self.vfeet[fid](x)[:2]) <= 50000*self.feet[fid](x)[2]**2 )
 
@@ -360,7 +385,7 @@ class CasadiActionModel:
 contactPattern = [] \
     + [ [ 1,1 ] ] * 30 \
     + [ [ 1,0 ] ] * 50  \
-    + [ [ 1,1 ] ] * 10  \
+    + [ [ 1,1 ] ] * 11  \
     + [ [ 0,1 ] ] * 50  \
     + [ [ 1,1 ] ] * 50 \
     + [ [ 1,1 ] ]
@@ -426,10 +451,13 @@ for t in range(T):
         '''
         tau'  = (1-alpha) tau + alpha ref      with alpha ~=~ 1 
         '''
-        ALPHA = 0.99
+        ALPHA = 0.75
         
         #totalcost += 1e-3*casadi.sumsqr((us[t][3:6]-(1-ALPHA)*us[t-1][3:6])/ALPHA - runningModels[t].u0[3:6])
         #totalcost += 1e-3*casadi.sumsqr((us[t][8:12]-(1-ALPHA)*us[t-1][8:12])/ALPHA - runningModels[t].u0[8:12])
+
+        #totalcost += 1e-4*casadi.sumsqr((us[t][3:6]-us[t-1][3:6]))
+        #totalcost += 1e-4*casadi.sumsqr((us[t][8:12]-us[t-1][8:12]))
             
 ### Tentative to smooth the forces
 '''
@@ -454,9 +482,9 @@ for k,cid in enumerate(contactIds):
             last = t-1
 '''
 
-#wfref,wfcont = 5e-1,2
-#wfref,wfcont = 1e-1,5
-wfref,wfcont = 1e-2,1
+### Gains for force continuity: wfref for tracking the reference, wfcont for time difference
+#wfref,wfcont = 1e-2,1
+wfref,wfcont = 5e-2,0
 
 # Search the contact phase of minimal duration (typically double support)
 contactState=[]
@@ -531,6 +559,9 @@ try:
     GUESS_FILE = '/tmp/sol.npy'
     #if True: ### Load warmstart from file
     guess = np.load(GUESS_FILE,allow_pickle=True)[()]
+    if len(guess['xs'])!=len(contactPattern):
+        print('Guess file does not have the right time horizon. Trash it')
+        raiseAnError
     t=0
     for dx,x_g in zip(dxs,guess['xs']):
         opti.set_initial(dx,np.concatenate([
