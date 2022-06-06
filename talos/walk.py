@@ -3,15 +3,32 @@ OCP with constrained dynamics
 
 Simple example with regularization cost and terminal com+velocity constraint, known initial config.
 
-min X,U,A,F    sum_t  ||u_t-u0||**2  + || diff(x_t,x0) ||**2 + || orientation(base(x_t)) ||**2
+min X,U,A,F    sum_t  
+                (q-q0)**2 + v**2 ## state regularisation
+                + vcom**2
+                + sum_foot cop**2
+                        + distance(f,cone central axis)
+                        + (f-f_t^*)**2
+
 s.t
         x_0 = x0
         x_t+1  = EULER(x_t,u_t,f_t |  f=a_t )
         a_t = aba(q_t,v_t,u_t)
         a_feet(t) = 0
         v_T = x_T [nq:]  = 0
-        com(q_t)[2] = com(x_T[:nq])[2] = 0.1
-        orientation(base(x_T)) == 0
+        com(q_t)[2] = com(x_T[:nq])[2] = X_TARGET
+
+        forall t:
+                forall foot: 
+                        v_foot**2/v_0 < z_foot/z_0      ### Fly high
+                        cop \in foot_box                ### COP constraint
+                        f_z >= 0                        ### Not pull on ground
+                        z_foot>=0                       ### not ground collision
+                distance(right foot, left foot) >= 17cm
+        forall impact ti:
+                z_foot = 0
+                v_foot = 0_6
+                roll_foot = pitch_foot = 0
 
 So the robot should just bend to reach altitude COM 80cm while stoping at the end of the movement.
 The acceleration is introduced as an explicit (slack) variable to simplify the formation of the contact constraint.
@@ -26,8 +43,10 @@ import numpy as np
 import example_robot_data as robex
 import matplotlib.pyplot as plt; plt.ion()
 from numpy.linalg import norm,inv,pinv,svd,eig
+# Local imports
 import talos_low
 import standard_config
+from weight_share import weightShareSmoothProfile,switch_tanh,switch_linear
 
 pin.SE3.__repr__=pin.SE3.__str__
 np.set_printoptions(precision=2, linewidth=300, suppress=True,threshold=10000)
@@ -87,68 +106,8 @@ referencePostures,referenceTorques = standard_config.load(robot.model)
 # ## HELPERS ######################################################################################
 # #################################################################################################
 
-
-def abadict(model,data,q,v,tau,fdict):
-    '''fdict are given with frame indexes'''
-    fvec = pin.StdVec_Force (model.njoints,pin.Force.Zero())
-    for cid,fi in fdict.items():
-        jid = model.frames[cid].parentJoint
-        fvec[jid] = model.frames[cid].placement * pin.Force(fi)
-    return pin.aba(model,data,q,v,tau,fvec)
-
-def dinv(A,th):
-    U,S,V = svd(A)
-    U1=U[:,:len(S)]
-    V1=V.T[:,:len(S)]
-    Si = S/(S**2+th**2)
-    return V1@np.diag(Si)@U1.T
-
-def torqueReg(q,cids,check=False):
-    '''
-    Compute torque for 0 movement with some contacts
-    return tau,[f1,...fnc]
-    '''
-    pin.computeAllTerms(model,data,q,np.zeros(model.nv))
-    J = np.vstack([ pin.getFrameJacobian(model,data,cid,pin.LOCAL)  for cid in cids ])
-
-
-    ### min || Ax-b|| st Cx=d    =>>> x = xc + pinv(AP) ( b-A xc) with  xc = pinv(C)*d and P=I-pinv(C)*C
-    ###### with x=(tau,f), C=[S.T J.T], d=nle, A = [0 I_6nc] and b = [0,0,mg/nc,0,0,0]*nc
-    C = np.hstack([ np.eye(model.nv)[6:,:].T, J.T ])
-    d = data.nle
-    A = np.eye(C.shape[1])[model.nv-6:,:]
-    b = np.concatenate( [ np.array([0,0,robotweight/len(cids),0,0,0]) ]*len(cids) )
-    w = [1,1,0.1,10,10,2]
-    W = np.diag(w*len(cids))
-    A=W@A
-    b=W@b
-    
-    Cp = pinv(C)
-    xopt = Cp@d
-    P = np.eye(model.nv-6+len(cids)*6) - Cp@C
-    xopt += dinv(A@P,1e-1)@( b-A@xopt )
-
-    tau = xopt[:model.nv-6]
-    forces = [ xopt[model.nv-6+6*i:model.nv+6*i] for i in range(len(cids)) ]
-
-    if check:
-        assert(norm(abadict(model,data,q,np.zeros(model.nv),np.concatenate([np.zeros(6),tau]),
-                            { cid: fi for cid,fi in zip(cids,forces)})) < 1e-5 )
-
-    return tau,forces
-
-
-check_u0,check_fs0 = torqueReg(model.q0,contactIds,True)
-# check_fvec0 = pin.StdVec_Force (model.njoints,pin.Force.Zero())
-# for fi,cid in zip(check_fs0,contactIds):
-#     jid = model.frames[cid].parentJoint
-#     check_fvec0[jid] = model.frames[cid].placement * pin.Force(fi)
-# check_acc = pin.aba(model,data,model.q0,np.zeros(model.nv),np.concatenate([np.zeros(6),check_u0]),check_fvec0)
-# assert(norm(check_acc)<1e-6)
-#print(torqueReg(model.q0,[16,30]))
-#stophere
-
 def listOfForcesToArrayWithZeros( forceList ):
+    '''Convert a list of list of forces into a numpy array where missing forces are set to 0.'''
     forceArray = [ np.concatenate([ \
                                     f[runningModels[t].contactIds.index(c) ] if c in runningModels[t].contactIds
                                     else np.zeros(6)
@@ -164,6 +123,12 @@ so3_log = casadi.Function('so3_log', [var_R], [cpin.log3(var_R)])
 ###################################################################################################
 ### TUNING ########################################################################################
 ###################################################################################################
+
+# In the code, cost terms with 0 weight are commented for reducing execution cost
+# An example of working weight value is then given as comment at the end of the line.
+# When setting them to >0, take care to uncomment the corresponding line.
+# All these lines are marked with the tag ##0##.
+
 basisQWeight = [0,0,0,50,50,0]
 legQWeight =  [3,3,1,2,1,1]
 torsoQWeight = [10,10]
@@ -179,21 +144,29 @@ STATE_WEIGHT = 1*np.array(  \
 assert(len(STATE_WEIGHT)==model.nv*2)
 
 ### Gains for force continuity: wfref for tracking the reference, wfcont for time difference
-refForceWeight,contiForceWeight = 5e-2,0
 contiTorqueWeight = 0
 refTorqueWeight = 0
-refStateWeight=5e-2
-flatBaseWeight=0 # 1e-1
+refStateWeight = 5e-2
+flatBaseWeight = 0 # 1e-1
 minForceWeight = 1e-2*np.array([1,1,.1,10,10,2])
 comWeight = 0 # 1e-1
 vcomWeight = 8e-1
-acomWeight = 0 #8e-1*DT
+acomWeight = 0 # 8e-1*DT
 copWeight = 1e-2
 verticalFootVelWeight = 0.1
 footVelWeight = 0 # 0.1
 footAccWeight = 0 # 0.01
 refFootFlyingAltitude = 3e-2
-footMinimalDistance = .1
+footMinimalDistance = .1 # 0.1  (.17 is the max value wrt initial config)x
+lowbandwidthweight = 0 # 1e-3
+minTorqueDiffWeight = 0 # 1e-4
+
+MAIN_JOINTS = [ 0,1,3 ]
+MAIN_JOINTS = [ i+7 for i in MAIN_JOINTS ] + [ i+13 for i in MAIN_JOINTS ]
+refMainJointsAtImpactWeight = 1e2
+refForceWeight = 5e-2
+contiForceWeight = 0
+
 # #################################################################################################
 # ## ACTION MODEL #################################################################################
 # #################################################################################################
@@ -337,17 +310,17 @@ class CasadiActionModel:
         # Cost functions:
         cost = 0
         # Follow reference torque
-        ###cost += refTorqueWeight*casadi.sumsqr(u-self.u0) * self.dt
+        # ##0## cost += refTorqueWeight*casadi.sumsqr(u-self.u0) * self.dt
         # Follow reference state
         cost += refStateWeight*casadi.sumsqr( self.wdifference(x,x0,STATE_WEIGHT) ) * self.dt
         # Keep basis horizontal
-        ###cost += flatBaseWeight * casadi.sumsqr(x[3:6]) # Keep base flat
+        # ##0## cost += flatBaseWeight * casadi.sumsqr(x[3:6]) # Keep base flat
         # Keep 6d contact forces at cone center, ie only f[2] should be nonzero
         cost += sum( [ casadi.sumsqr((f*minForceWeight)[[0,1,3,4,5]]) for f in fs ] ) * self.dt
         # Penalize com and derivatives of com
-        ###cost += comWeight* casadi.sumsqr( self.com(x)[2]-com0[2] )
+        # ##0## cost += comWeight* casadi.sumsqr( self.com(x)[2]-com0[2] )
         cost += vcomWeight* casadi.sumsqr( self.vcom(x)[2] )
-        ###cost += acomWeight* casadi.sumsqr( self.acom(x,a)[2] )
+        # ##0## cost += acomWeight* casadi.sumsqr( self.acom(x,a)[2] )
         
         ### OCP additional constraints
 
@@ -369,8 +342,8 @@ class CasadiActionModel:
         for fid in contactIds:
             if fid in self.contactIds: continue
             cost += verticalFootVelWeight*casadi.sumsqr(self.vfeet[fid](x)[2])
-            ###cost += footVelWeight*casadi.sumsqr(self.vfeet[fid](x))
-            ###cost += footAccWeight*casadi.sumsqr(self.afeet[fid](x,a)[:3])
+            # ##0## cost += footVelWeight*casadi.sumsqr(self.vfeet[fid](x))
+            # ##0## cost += footAccWeight*casadi.sumsqr(self.afeet[fid](x,a)[:3])
 
             # Foot altitude should be above ground
             ocp.subject_to( self.feet[fid](x)[2]>=0 )
@@ -415,10 +388,15 @@ runningModels = [ casadiActionModels[contactSequence[t]] for t in range(T) ]
 terminalModel = casadiActionModels[contactSequence[T]]
 
 # Decision variables
+# State increment with respect to an arbitrary x0=(q0,v0)
 dxs = [ opti.variable(model.ndx) for model in runningModels+[terminalModel] ]     # state variable
+# Acceleration a=vdot
 acs = [ opti.variable(model.nv) for model in runningModels ]                      # acceleration
+# Torque of actuated joints
 us =  [ opti.variable(model.nu) for model in runningModels ]                      # control variable
+# Contact forces (number depends on the phase)
 fs =  [ opti.variable(6*len(model.contactIds) ) for model in runningModels ]      # contact force
+# For convenience, we work with x=x0+dx as the real decision varible.
 xs =  [ m.integrate(x0,dx) for m,dx in zip(runningModels+[terminalModel],dxs) ]
 
 # Roll out loop, summing the integral cost and defining the shooting constraints.
@@ -441,15 +419,8 @@ for t in range(T):
             opti.subject_to( runningModels[t].Rfeet[c](xs[t])[0,2] == 0) # No rotation on roll
             opti.subject_to( runningModels[t].Rfeet[c](xs[t])[1,2] == 0) # No rotation on pitch
 
-            #totalcost += casadi.sumsqr( runningModels[t].feet[c](xs[t])[2]) * 100
-            #totalcost += casadi.sumsqr( runningModels[t].vfeet[c](xs[t])  ) * 100
-            #totalcost += casadi.sumsqr( runningModels[t].Rfeet[c](xs[t])[0,2]) * 100
-            #totalcost += casadi.sumsqr( runningModels[t].Rfeet[c](xs[t])[1,2]) * 100
-
             # Keep main joints in standard configuration at impact.
-            MAIN_JOINTS = [ 0,1,3 ]
-            MAIN_JOINTS = [ i+7 for i in MAIN_JOINTS ] + [ i+13 for i in MAIN_JOINTS ]
-            totalcost +=  1e2*casadi.sumsqr( xs[t][MAIN_JOINTS] - model.q0[MAIN_JOINTS] )
+            totalcost +=  refMainJointsAtImpactWeight*casadi.sumsqr( xs[t][MAIN_JOINTS] - model.q0[MAIN_JOINTS] )
 
     # Bandwidth cost
     if t>1:
@@ -457,14 +428,18 @@ for t in range(T):
         tau'  = (1-alpha) tau + alpha ref      with alpha ~=~ 1 
         '''
         ALPHA = 0.75
-        
-        #totalcost += 1e-3*casadi.sumsqr((us[t][3:6]-(1-ALPHA)*us[t-1][3:6])/ALPHA - runningModels[t].u0[3:6])
-        #totalcost += 1e-3*casadi.sumsqr((us[t][8:12]-(1-ALPHA)*us[t-1][8:12])/ALPHA - runningModels[t].u0[8:12])
 
-        #totalcost += 1e-4*casadi.sumsqr((us[t][3:6]-us[t-1][3:6]))
-        #totalcost += 1e-4*casadi.sumsqr((us[t][8:12]-us[t-1][8:12]))
+        ### Sebastien formulation ... lead to poooooor results (reference torque likely too bad)
+        # ##0## totalcost += lowBandwidthWeight*casadi.sumsqr((us[t][3:6]-(1-ALPHA)*us[t-1][3:6])/ALPHA - runningModels[t].u0[3:6])
+        # ##0## totalcost += lowBandwidthWeight*casadi.sumsqr((us[t][8:12]-(1-ALPHA)*us[t-1][8:12])/ALPHA - runningModels[t].u0[8:12])
+
+        ### Min diff torque, working soso, could work with some tuning, might not be needed.
+        # ##0## totalcost += minTorqueDiffWeight*casadi.sumsqr((us[t][3:6]-us[t-1][3:6]))
+        # ##0## totalcost += minTorqueDiffWeight*casadi.sumsqr((us[t][8:12]-us[t-1][8:12]))
             
 
+# ### FORCE COST ###
+# The force costs are defined using a reference (smooth) force.
 # Search the contact phase of minimal duration (typically double support)
 contactState=[]
 dur=mindur=len(contactPattern)
@@ -474,12 +449,10 @@ for t,s in enumerate(contactPattern):
         contactState=s
         mindur=min(mindur,dur)
         dur=0
-        print(f'Change at {t}, phase duration={dur} (mindur={mindur}')
 # Select the smoothing transition to be smaller than half of the minimal duration.
 transDuration=(mindur-1)//2
 # Compute contact importance, ie how much of the weight should be supported by each
 # foot at each time.
-from weight_share import weightShareSmoothProfile,switch_tanh,switch_linear
 contactImportance = weightShareSmoothProfile(contactPattern,transDuration,switch=switch_linear)
 # Contact reference forces are set to contactimportance*weight
 weightReaction = np.array([0,0,robotweight,0,0,0])
@@ -516,7 +489,7 @@ opti.minimize(totalcost)
 s_opt = {
     'tol' : 1e-4,
     'acceptable_tol': 1e-4,
-    'max_iter': 10,
+    'max_iter': 200,
 }
 opti.solver("ipopt", {}, s_opt) # set numerical backend
 
@@ -527,9 +500,8 @@ def call(i):
 
 opti.callback(call)
 
+# Try to load the initial guess from a file.
 try:
-    GUESS_FILE = 'onestep.npy'
-    GUESS_FILE = 'twosteps.npy'
     GUESS_FILE = None
     GUESS_FILE = '/tmp/sol.npy'
     #if True: ### Load warmstart from file
@@ -552,6 +524,7 @@ try:
         opti.set_initial(ac,ac_g)
     print('Done with reading warm start from file')
 except:
+    # If initial guess cannot be red properly, build it as quasi-static start.
     print('Warm start from file failed, now building a quasistatic guess')
     for dx in dxs:
         opti.set_initial(dx,np.zeros(model.nv*2))
@@ -559,7 +532,8 @@ except:
         opti.set_initial(u,r.u0)
         nc=len(r.contactIds)
         opti.set_initial(f, np.concatenate(r.fs0))
-    
+
+# ### SOLVE ####################################################################
 # Caution: in case the solver does not converge, we are picking the candidate values
 # at the last iteration in opti.debug, and they are NO guarantee of what they mean.
 try:
@@ -569,6 +543,8 @@ except:
     print('ERROR in convergence, plotting debug info.')
     optivalue = opti.debug.value
 
+# ### SOLUTION #################################################################
+# Get solution as numy arrays.
 dxs_sol = np.array([ opti.value(x) for x in dxs ])
 xs_sol = np.array([ opti.value(x) for x in xs ])
 q_sol = xs_sol[:,: model.nq]
@@ -579,27 +555,31 @@ base_log = []
 [base_log.append(terminalModel.base_translation(xs_sol[i]).full()[:,0]) for i in range(len(xs_sol))]
 base_log = np.array(base_log)
 ### We reorganize fs_sol to have 4 contacts for each timestep, adding a 0 force when needed.
-fs_sol0 = [ np.concatenate([ \
-                             f[runningModels[t].contactIds.index(c) ] if c in runningModels[t].contactIds
-                             else np.zeros(6)
-                             for i,c in enumerate(contactIds)   ])
+fs_sol0 = [ np.concatenate([ 
+    f[runningModels[t].contactIds.index(c) ] if c in runningModels[t].contactIds
+    else np.zeros(6)
+    for i,c in enumerate(contactIds)   ])
             for t,f in enumerate(fs_sol) ]
-
-    
-viz.play(q_sol.T, terminalModel.dt)
-
+# Gather forces in world frame
+fs_world = []
+for t,m in enumerate(runningModels):
+    pin.framesForwardKinematics(model, data, xs_sol[t, :model.nq])
+    fs_world.append( np.concatenate([  data.oMf[idf].rotation @ fs_sol0[t][3*i:3*i+3] for i,idf in enumerate(contactIds) ]) )
+fs_world = np.array(fs_world)
 
 # ## CHECK ########################################################################################
 # ## CHECK ########################################################################################
 # ## CHECK ########################################################################################
+
+# Sanity check of the feasibility of the solution (just to be sure, ipOpt should
+# enforce that).
 
 ha = []
 
-nq,nv = model.nq,model.nv
 # Check that all constraints are respected
 for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fs_sol,xs_sol[1:])):
     tau = np.concatenate([np.zeros(6),u])
-    q1,v1 = x1[:nq],x1[nq:]
+    q1,v1 = x1[:model.nq],x1[model.nq:]
 
     vecfs = pin.StdVec_Force()
     for __j in model.joints:
@@ -608,12 +588,13 @@ for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fs_sol,xs_
         frame = model.frames[idf]
         vecfs[frame.parentJoint] = frame.placement * pin.Force(f[i])
 
-    a = pin.aba(model,data,x1[:nq],x1[nq:],tau,vecfs)
+    a = pin.aba(model,data,x1[:model.nq],x1[model.nq:],tau,vecfs)
     ha.append(a.copy())
     vnext = v1+a*m.dt
     qnext = pin.integrate(model,q1,vnext*m.dt)
     xnext = np.concatenate([qnext,vnext])
-    assert( np.linalg.norm(xnext-x2) < 1e-5 )
+    if not( np.linalg.norm(xnext-x2) < 1e-5 ):
+        print('Error: inconsistant trajectory xnext!=x+f(x,u)')
 
 
     ### Check 0 velocity of contact points
@@ -621,22 +602,42 @@ for t,(m,x1,u,f,x2) in enumerate(zip(runningModels,xs_sol[:-1],us_sol,fs_sol,xs_
     pin.updateFramePlacements(model,data)
     for idf in m.contactIds:
         vf = pin.getFrameVelocity(model,data,idf)
-        #assert( sum(vf.linear**2) < 1e-8 )
         af = pin.getFrameAcceleration(model,data,idf,pin.LOCAL_WORLD_ALIGNED).vector
         if not ( sum(af**2) < 1e-5 ): print("Warning with af**2")
 
+### Check warm start is close to solution
+for dx,x_g in zip(dxs_sol,guess['xs']):
+    dx_g = np.concatenate([
+        pin.difference(model,model.q0,x_g[:model.nq]),
+        x_g[model.nq:]])
+    if not (norm(dx_g-dx)<1e-2):
+        print('Large change in <x> since warm start')
+        break
+for f,f_g,m in zip(fs_sol,guess['fs'],runningModels):
+    change = False
+    fshort_g = [ f_g[6*rank:6*(rank+1)] for rank,cid in enumerate(contactIds) if cid in m.contactIds ]
+    for fi,fi_g in zip(f,fshort_g):
+        if not (norm(fi-fi_g)<1e-2):
+            print('Large change in <f> since warm start')
+            change = True
+            break
+    if change: break
+for u,u_g in zip(us_sol,guess['us']):
+    if not norm(u-u_g)<1e-2:
+        print('Large change in <u> since warm start')
+        break
+for ac,ac_g in zip(acs_sol,guess['acs']):
+    if not (norm(ac-ac_g)<1e-2):
+        print('Large change in <a> since warm start')
+        break
 
-# Gather forces in world frame
-fs_world = []
-for t,m in enumerate(runningModels):
-    pin.framesForwardKinematics(model, data, xs_sol[t, :nq])
-    fs_world.append( np.concatenate([  data.oMf[idf].rotation @ fs_sol0[t][3*i:3*i+3] for i,idf in enumerate(contactIds) ]) )
-fs_world = np.array(fs_world)
+# ### DISPLAY ######################################################################
+# Play solution in gepetto viewer
+viz.play(q_sol.T, terminalModel.dt)
 
+# ### PLOT #########################################################################
 
-### ------------------------------------------------------------------- ###
-# PLOT
-
+# Solver convergence
 plt.figure(figsize=(12, 6), dpi = 90)
 plt.subplot(1,2,1)
 plt.title('Residuals')
@@ -648,6 +649,7 @@ plt.title('cost')
 plt.plot(cost_log)
 plt.draw()
 
+# Robot basis movement
 legend = ['x', 'y', 'z']
 plt.figure('Basis move')
 for i in range(3):
@@ -657,14 +659,15 @@ for i in range(3):
     if i == 0:
         plt.axhline(y = X_TARGET, color = 'black', linestyle = '--')
 
-
+# Cop of each foot vs time
 plt.figure('cop time local')
 for ifig,cid in enumerate(contactIds):
     plt.subplot(len(contactIds)+1,1,ifig+1)
     ftraj = [ [t,f[r.contactIds.index(cid)]] for t,(f,r) in enumerate(zip(fs_sol,runningModels)) if cid in r.contactIds ] 
     cop = [ [t,  [ f[4]/f[2], -f[3]/f[2] ] ] for (t,f) in ftraj ]
     plt.plot([ t for t,p in cop ], [ p for t,p in cop ],'.')
-        
+
+# Cop of each foot in x-vs-y (with limits)
 plt.figure(figsize=(12,6))
 plt.title('cop local')
 l_foot = np.array([ [-FOOT_SIZE,-FOOT_SIZE,0,1],[-FOOT_SIZE,FOOT_SIZE,0,1],[FOOT_SIZE,FOOT_SIZE,0,1],[FOOT_SIZE,-FOOT_SIZE,0,1],[-FOOT_SIZE,-FOOT_SIZE,0,1] ]).T
@@ -683,6 +686,7 @@ for ifig,cid in enumerate(contactIds):
         w_foot = data.oMf[cid].homogeneous @ l_foot
         plt.plot(w_foot[0,:],w_foot[1,:],'grey')
 
+# Forces and reference forces wrt time
 plt.figure('forces')
 frefplot = np.array(listOfForcesToArrayWithZeros(referenceForces))
 fs0plot=np.array(fs_sol0)
@@ -695,6 +699,7 @@ plt.plot(fs0plot[:,8])
 plt.plot(frefplot[:,8])
 plt.xlabel(model.frames[contactIds[1]].name)
 
+# COM position and velocity (x+y separated from z)
 plt.figure('com',figsize=(6,8))
 complot = []
 vcomplot = []
@@ -720,6 +725,7 @@ plt.subplot(414)
 plt.plot(vcomplot[:,2])
 plt.ylabel('vel z')
 
+# Foot position and velocity
 plt.figure('foot')
 foottraj = []
 footvtraj = []
@@ -751,7 +757,7 @@ for i,cid in enumerate(contactIds):
 plt.legend(hplot,names)
 plt.ylabel('horz vel')
    
-
+# ### SAVE #####################################################################
 #plt.show()
 def save():
     np.save(open("/tmp/sol.npy", "wb"),
@@ -763,20 +769,4 @@ def save():
         })
     
 
-
-### Check warm start is close to solution
-if True:
-    for dx,x_g in zip(dxs_sol,guess['xs']):
-        dx_g = np.concatenate([
-            pin.difference(model,model.q0,x_g[:model.nq]),
-            x_g[model.nq:]])
-        assert(norm(dx_g-dx)<1e-2)
-    for f,f_g,m in zip(fs_sol,guess['fs'],runningModels):
-        fshort_g = [ f_g[6*rank:6*(rank+1)] for rank,cid in enumerate(contactIds) if cid in m.contactIds ]
-        for fi,fi_g in zip(f,fshort_g):
-            assert(norm(fi-fi_g)<1e-2)
-    for u,u_g in zip(us_sol,guess['us']):
-        assert(norm(u-u_g)<1e-2)
-    for ac,ac_g in zip(acs_sol,guess['acs']):
-        assert(norm(ac-ac_g)<1e-2)
     
