@@ -29,34 +29,31 @@ from numpy.linalg import norm,inv,pinv,svd,eig
 import talos_low
 import standard_config
 
-#plt.style.use('seaborn')
 pin.SE3.__repr__=pin.SE3.__str__
 np.set_printoptions(precision=2, linewidth=300, suppress=True,threshold=10000)
 
 ### HYPER PARAMETERS
 # Hyperparameters defining the optimal control problem.
-DT = 0.010
-z_target = 1.05
-z_target = .8
 
-x_target = .35
+DT = 0.010 
+X_TARGET = .35
 FOOT_SIZE = .05
 
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
-#robot = robex.load('talos_legs')
 robot = talos_low.load()
 
 contactIds = [ i for i,f in enumerate(robot.model.frames) if "sole_link" in f.name ]
-footLength=0.1
+ankleToTow=0.1
+ankleToHeel=-0.1
 for cid in contactIds:
     f = robot.model.frames[cid]
     robot.model.addFrame(
         pin.Frame(f'{f.name}_tow',f.parentJoint,f.parentFrame,
-                  f.placement*pin.SE3(np.eye(3),np.array([.1,0,0])),pin.FrameType.OP_FRAME))
+                  f.placement*pin.SE3(np.eye(3),np.array([ankleToTow,0,0])),pin.FrameType.OP_FRAME))
     robot.model.addFrame(
         pin.Frame(f'{f.name}_heel',f.parentJoint,f.parentFrame,
-                  f.placement*pin.SE3(np.eye(3),np.array([-.1,0,0])),pin.FrameType.OP_FRAME))
+                  f.placement*pin.SE3(np.eye(3),np.array([ankleToHeel,0,0])),pin.FrameType.OP_FRAME))
 try:
     viz = pin.visualize.GepettoVisualizer(robot.model,robot.collision_model,robot.visual_model)
     viz.initViewer()
@@ -73,34 +70,23 @@ data = model.createData()
 
 # Initial config, also used for warm start
 x0 = np.concatenate([model.q0,np.zeros(model.nv)])
-# quasi static for x0, used for warm-start and regularization
-u0 =  np.array([-0.02615051, -0.25848605,  0.51696646,  0.0285894 , -0.25720605,
-               0.51441775, -0.02614404,  0.25848271, -0.51697107,  0.02859587,
-               0.25720939, -0.51441314])
 
+# Some key elements of the model
 towIds = { idf: model.getFrameId(f'{model.frames[idf].name}_tow') for idf in contactIds }
 heelIds = { idf: model.getFrameId(f'{model.frames[idf].name}_heel') for idf in contactIds }
 baseId = model.getFrameId('root_joint')
-pin.framesForwardKinematics(model,data,x0[:model.nq])
 robotweight = -sum([Y.mass for Y in model.inertias]) * model.gravity.linear[2]
+com0 = pin.centerOfMass(model,data,model.q0)
+
+pin.framesForwardKinematics(model,data,x0[:model.nq])
 # Load key postures
 referencePostures,referenceTorques = standard_config.load(robot.model)
 
 
-# pin.forwardKinematics(model,data,model.q0)
-# fs0 = pin.StdVec_Force (model.njoints,pin.Force.Zero())
-# for cid in contactIds:
-#     jid = model.frames[cid].parentJoint
-#     fs0[jid] = pin.Force(np.concatenate([data.oMi[jid].rotation.T@np.array([0,0,totalmass*9.81/2]),
-#                                          [0.545,-2.93,-0.005]]))
-# tau0 = pin.rnea(model,data,model.q0,np.zeros(model.nv),np.zeros(model.nv),fs0)
-# assert(norm(tau0[:6])<0.1 and "Heuristic for tau0 is wrong, modify it" )
+# #################################################################################################
+# ## HELPERS ######################################################################################
+# #################################################################################################
 
-########################################################################################################
-### HELPERS ############################################################################################
-########################################################################################################
-
-com0 = pin.centerOfMass(model,data,model.q0)
 
 def abadict(model,data,q,v,tau,fdict):
     '''fdict are given with frame indexes'''
@@ -191,9 +177,26 @@ STATE_WEIGHT = 1*np.array(  \
     basisQWeight+legQWeight+legQWeight+armQWeight \
     +basisVWeight+legVWeight+legVWeight+armVWeight)
 assert(len(STATE_WEIGHT)==model.nv*2)
-########################################################################################################
-### ACTION MODEL #######################################################################################
-########################################################################################################
+
+### Gains for force continuity: wfref for tracking the reference, wfcont for time difference
+refForceWeight,contiForceWeight = 5e-2,0
+contiTorqueWeight = 0
+refTorqueWeight = 0
+refStateWeight=5e-2
+flatBaseWeight=0 # 1e-1
+minForceWeight = 1e-2*np.array([1,1,.1,10,10,2])
+comWeight = 0 # 1e-1
+vcomWeight = 8e-1
+acomWeight = 0 #8e-1*DT
+copWeight = 1e-2
+verticalFootVelWeight = 0.1
+footVelWeight = 0 # 0.1
+footAccWeight = 0 # 0.01
+refFootFlyingAltitude = 3e-2
+footMinimalDistance = .1
+# #################################################################################################
+# ## ACTION MODEL #################################################################################
+# #################################################################################################
 
 # The action model stores the computation of the dynamic -f- and cost -l- functions, both return by
 # calc as self.calc(x,u) -> [xnext=f(x,u),cost=l(x,u)]
@@ -204,10 +207,9 @@ class CasadiActionModel:
     def __init__(self,cmodel,activeContactIds):
         '''
         cmodel: casadi pinocchio model
-        contactIds: list of contact frames IDs.
+        activeContactIds: list of contact frames IDs.
         '''
-    
-        
+          
         self.cmodel = cmodel
         self.contactIds = activeContactIds
         
@@ -219,13 +221,12 @@ class CasadiActionModel:
         self.nv = nv
         self.ntau = nv
 
-        #self.u0, self.fs0 = torqueReg(model.q0,self.contactIds)
-        self.uerror = u0
-        tauref =referenceTorques[tuple(self.contactIds)]
+        tauref = referenceTorques[tuple(self.contactIds)]
         assert(norm(tauref[:6])<1e-4)
         self.u0 = tauref[6:].copy()
         self.fs0 = [ np.array([0,0,robotweight/len(self.contactIds),0,0,0]) for __c in self.contactIds ]
-        
+
+        # Symbols used to define casadi functions
         cx = casadi.SX.sym("x",self.nx,1)
         cq = casadi.SX.sym("q",cmodel.nq,1)
         cv = casadi.SX.sym("v",cmodel.nv,1)
@@ -243,7 +244,6 @@ class CasadiActionModel:
         assert( len( set( [ cmodel.frames[idf].parentJoint for idf in self.contactIds ]) ) == len(self.contactIds) )
         for f,idf in zip(cfs,self.contactIds):
             # Contact forces introduced in ABA as spatial forces at joint frame.
-            #print('force = ' ,f)
             forces[cmodel.frames[idf].parentJoint] = cmodel.frames[idf].placement * cpin.Force(f)
         self.forces = cpin.StdVec_Force()
         for f in forces:
@@ -267,6 +267,7 @@ class CasadiActionModel:
         self.difference = casadi.Function('xminus', [cx,cx2],
                                           [ casadi.vertcat(cpin.difference(self.cmodel,cx2[:nq],cx[:nq]),
                                                          cx2[nq:]-cx[nq:]) ])
+        # Weighted lie difference
         self.wdifference = casadi.Function('xwminus', [cx,cx2,cw],
                                            [ cw*casadi.vertcat(cpin.difference(self.cmodel,cx2[:nq],cx[:nq]),
                                                          cx2[nq:]-cx[nq:]) ])
@@ -278,31 +279,38 @@ class CasadiActionModel:
         # feet[c](x) =  position of the foot <c> at configuration q=x[:nq]
         self.feet = { idf: casadi.Function('foot'+cmodel.frames[idf].name,
                                       [cx],[self.cdata.oMf[idf].translation]) for idf in contactIds }
+        # tow[c](x) = Tow positions 
         self.tows = { idf: casadi.Function('tow'+cmodel.frames[idf].name,
                                       [cx],[self.cdata.oMf[towIds[idf]].translation]) for idf in contactIds }
+        # heels[c](x) = Heel positions
         self.heels = { idf: casadi.Function('heel'+cmodel.frames[idf].name,
                                       [cx],[self.cdata.oMf[heelIds[idf]].translation]) for idf in contactIds }
         # Rfeet[c](x) =  orientation of the foot <c> at configuration q=x[:nq]
         self.Rfeet = {idf: casadi.Function('Rfoot'+cmodel.frames[idf].name,
                                        [cx],[self.cdata.oMf[idf].rotation]) for idf in contactIds }
-        # vfeet[c](x) =  linear velocity of the foot <c> at configuration q=x[:nq] with vel v=x[nq:]
+        # vfeet[c](x) =  6d velocity of the foot <c> at configuration q=x[:nq] with vel v=x[nq:]
         self.vfeet = {idf: casadi.Function('vfoot'+cmodel.frames[idf].name,
                                        [cx],[cpin.getFrameVelocity( cmodel,cdata,idf,pin.LOCAL_WORLD_ALIGNED ).vector])
                        for idf in contactIds }
+        # vtows[c](x) = 6d velocity of the tow
         self.vtows = { idf: casadi.Function('vtow'+cmodel.frames[idf].name,
                                        [cx],[cpin.getFrameVelocity( cmodel,cdata,towIds[idf],pin.LOCAL_WORLD_ALIGNED ).vector])
                        for idf in contactIds }
+        # vheels[c](x) = 6d velocity of the heel
         self.vheels = { idf: casadi.Function('vheel'+cmodel.frames[idf].name,
                                        [cx],[cpin.getFrameVelocity( cmodel,cdata,heelIds[idf],pin.LOCAL_WORLD_ALIGNED ).vector])
                        for idf in contactIds }
-        # vfeet[c](x,a) =  linear acceleration of the foot <c> at configuration q=x[:nq] with vel v=x[nq:] and acceleration a
+        # afeet[c](x,a) =  linear acceleration of the foot <c> at configuration q=x[:nq] with vel v=x[nq:] and acceleration a
         self.afeet = { idf: casadi.Function('afoot'+cmodel.frames[idf].name,
                                        [cx,ca],[cpin.getFrameAcceleration( cmodel,cdata,idf,pin.LOCAL_WORLD_ALIGNED ).vector])
                        for idf in contactIds }
 
         cpin.centerOfMass(cmodel,self.cdata,cx[:nq],cx[nq:],ca)
+        # com(x) = com position
         self.com = casadi.Function('com',[cx],[self.cdata.com[0]])
+        # acom(x) = com velocity
         self.vcom = casadi.Function('vcom',[cx],[self.cdata.vcom[0]])
+        # acom(x,a) = com acceleration
         self.acom = casadi.Function('acom',[cx,ca],[self.cdata.acom[0]])
         
     def calc(self,x, u, a, fs, ocp):
@@ -328,25 +336,26 @@ class CasadiActionModel:
 
         # Cost functions:
         cost = 0
-        #cost += 1e-4*casadi.sumsqr(u-self.u0) * self.dt
-        cost += 5e-2*casadi.sumsqr( self.wdifference(x,x0,STATE_WEIGHT) ) * self.dt
-        ##C##cost += 1e-1 * casadi.sumsqr(x[3:6]) # Keep base flat
-        #cost += 1e-3*sum( [ casadi.sumsqr(f-fref) for f,fref in zip(fs,self.fs0) ] ) * self.dt
-        #cost += 1e-2*sum( [ casadi.sumsqr(f-fref) for f,fref in zip(fs,self.fs0) ] ) * self.dt
-        fref = np.array([ 0,0,robotweight/len(self.contactIds),0,0,0])
-        force_importance = [1,1,.1,10,10,2]
-        #cost += 1e-5*sum( [ casadi.sumsqr((f-fref)*force_importance) for f in fs ] ) * self.dt
-        cost += 1e-4*sum( [ casadi.sumsqr((f*force_importance)[[0,1,3,4,5]]) for f in fs ] ) * self.dt
-        #cost += 1e-1* casadi.sumsqr( self.com(x)[2]-com0[2] )
-        cost += 8e-1* casadi.sumsqr( self.vcom(x)[2] )
-        #cost += 8e-1*DT* casadi.sumsqr( self.acom(x,a)[2] )
+        # Follow reference torque
+        ###cost += refTorqueWeight*casadi.sumsqr(u-self.u0) * self.dt
+        # Follow reference state
+        cost += refStateWeight*casadi.sumsqr( self.wdifference(x,x0,STATE_WEIGHT) ) * self.dt
+        # Keep basis horizontal
+        ###cost += flatBaseWeight * casadi.sumsqr(x[3:6]) # Keep base flat
+        # Keep 6d contact forces at cone center, ie only f[2] should be nonzero
+        cost += sum( [ casadi.sumsqr((f*minForceWeight)[[0,1,3,4,5]]) for f in fs ] ) * self.dt
+        # Penalize com and derivatives of com
+        ###cost += comWeight* casadi.sumsqr( self.com(x)[2]-com0[2] )
+        cost += vcomWeight* casadi.sumsqr( self.vcom(x)[2] )
+        ###cost += acomWeight* casadi.sumsqr( self.acom(x,a)[2] )
         
         ### OCP additional constraints
-        #for afoot in self.afeet:
+
+        # Zero acceleration at contact (baumgart not working ... why???)
         for cid in self.contactIds:
             ocp.subject_to( self.afeet[cid](x,a) == 0)#-100*self.vfeet[cid](x) )
-            
-        #for f,R in zip(fs,self.Rfeet):   # for cone constrains (flat terrain)
+
+        # Contact force with positive normal and bounded COP
         for f,cid in zip(fs,self.contactIds):
             R = self.Rfeet[cid]
             fw = R(x) @ f[:3]
@@ -355,33 +364,32 @@ class CasadiActionModel:
             ocp.subject_to( tauw[:2]/fw[2] <= FOOT_SIZE )
             ocp.subject_to( tauw[:2]/fw[2] >= -FOOT_SIZE )
             # Minimize COP deviation as well
-            cost += 1e-2*casadi.sumsqr(tauw[:2]/fw[2]/FOOT_SIZE)
+            cost += copWeight*casadi.sumsqr(tauw[:2]/fw[2]/FOOT_SIZE)
 
         for fid in contactIds:
             if fid in self.contactIds: continue
-            #print(f'Flying for fdi #{fid}')
-            cost += casadi.sumsqr(self.vfeet[fid](x)[2])*.1 ##D##
-            #cost += casadi.sumsqr(self.vfeet[fid](x))*.1 ##D##
-            #cost += casadi.sumsqr(self.afeet[fid](x,a)[:3])*.01
+            cost += verticalFootVelWeight*casadi.sumsqr(self.vfeet[fid](x)[2])
+            ###cost += footVelWeight*casadi.sumsqr(self.vfeet[fid](x))
+            ###cost += footAccWeight*casadi.sumsqr(self.afeet[fid](x,a)[:3])
+
+            # Foot altitude should be above ground
             ocp.subject_to( self.feet[fid](x)[2]>=0 )
-            ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2]) <= (self.feet[fid](x)[2]/3e-2) ) ## 50 is best
-            ocp.subject_to( casadi.sumsqr(self.vtows[fid](x)[:2]) <= (self.tows[fid](x)[2]/3e-2)) ## 50 is best
-            #ocp.subject_to( casadi.sumsqr(self.vheels[fid](x)[:2]) <= (self.heels[fid](x)[2]/1e-2)**2) ## 50 is best
-            #ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2])*1e-3 <= 1e4*self.feet[fid](x)[2]**4 )
-            #ocp.subject_to( casadi.norm_2(self.vfeet[fid](x)[:2]) <= 50000*self.feet[fid](x)[2]**2 )
+            # Foot horizontal velocity should be lower than its (normalized) altitude
+            ocp.subject_to( casadi.sumsqr(self.vtows[fid](x)[:2]) <= (self.tows[fid](x)[2]/refFootFlyingAltitude))
+            ocp.subject_to( casadi.sumsqr(self.vheels[fid](x)[:2]) <= (self.heels[fid](x)[2]/refFootFlyingAltitude))
 
             ### Avoid collision between feet
             for cid in self.contactIds:
-                ocp.subject_to( casadi.sumsqr(self.feet[fid](x)[:2]-self.feet[cid](x)[:2]) >= .1**2)
+                ocp.subject_to( casadi.sumsqr(self.feet[fid](x)[:2]-self.feet[cid](x)[:2]) >= footMinimalDistance**2)
             
         return xnext,cost
 
 
-########################################################################################################
-### OCP PROBLEM ########################################################################################
-########################################################################################################
+# ##################################################################################################
+# ## OCP PROBLEM ###################################################################################
+# ##################################################################################################
 
-# [FL_FOOT, FR_FOOT, HL_FOOT, HR_FOOT]
+# Contact are specified with the order chosen in <contactIds>
 contactPattern = [] \
     + [ [ 1,1 ] ] * 30 \
     + [ [ 1,0 ] ] * 50  \
@@ -392,9 +400,10 @@ contactPattern = [] \
 T = len(contactPattern)-1
     
 def patternToId(pattern):
+    '''Return the tuple of active contact from a pattern like [0,1], [1,0] or [1,1].'''
     return tuple( contactIds[i] for i,c in enumerate(pattern) if c==1 )
 
-# In order to avoid creating to many casadi action model, we store in a dict one model for each contact pattern.
+# In order to avoid creating too many casadi action model, we store in a dict one model for each contact pattern.
 contactSequence = [ patternToId(p) for p in contactPattern ]
 casadiActionModels = { contacts: CasadiActionModel(cmodel,contacts)  for contacts in set(contactSequence) }
 
@@ -437,10 +446,6 @@ for t in range(T):
             #totalcost += casadi.sumsqr( runningModels[t].Rfeet[c](xs[t])[0,2]) * 100
             #totalcost += casadi.sumsqr( runningModels[t].Rfeet[c](xs[t])[1,2]) * 100
 
-            #opti.subject_to( runningModels[t].Rfeet[i](xs[t])[:,2] == [0,0,1])
-            #opti.subject_to( runningModels[t].Rfeet[i](xs[t])[2,2] == 1)
-            #opti.subject_to( so3_log(runningModels[t].Rfeet[i](xs[t])) == 0)
-
             # Keep main joints in standard configuration at impact.
             MAIN_JOINTS = [ 0,1,3 ]
             MAIN_JOINTS = [ i+7 for i in MAIN_JOINTS ] + [ i+13 for i in MAIN_JOINTS ]
@@ -459,32 +464,6 @@ for t in range(T):
         #totalcost += 1e-4*casadi.sumsqr((us[t][3:6]-us[t-1][3:6]))
         #totalcost += 1e-4*casadi.sumsqr((us[t][8:12]-us[t-1][8:12]))
             
-### Tentative to smooth the forces
-'''
-for k,cid in enumerate(contactIds):
-    last = -10000
-    for t in range(T):
-        if contactPattern[t][k]==1:
-            w = 1e-2/(t+1-last)**2
-            if w<5e-7: continue
-            print(f'c={cid}:t={t}: in contact since {last} === w={w:.2f}')
-            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight ) * w
-        else:
-            last = t+1
-    last = 10000
-    for t in reversed(range(T)):
-        if contactPattern[t][k]==1:
-            w = 1e-2/(last-t+1)**2
-            if w<5e-7: continue
-            print(f'c={cid}:t={t}: in contact until {last} === w={w:.2f}')
-            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight ) * w
-        else:
-            last = t-1
-'''
-
-### Gains for force continuity: wfref for tracking the reference, wfcont for time difference
-#wfref,wfcont = 1e-2,1
-wfref,wfcont = 5e-2,0
 
 # Search the contact phase of minimal duration (typically double support)
 contactState=[]
@@ -512,36 +491,32 @@ referenceForces = [
 ### Make forces track the reference (smooth) trajectory
 for t,(refs,r) in enumerate(zip(referenceForces,runningModels)):
     for k,f in enumerate(refs):
-        totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - f)/robotweight ) * wfref
+        totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - f)/robotweight ) * refForceWeight
 
 ### Make the forces time smooth
 for t in range(1,T-1):
     for k,cid in enumerate(runningModels[t].contactIds):
         if cid in runningModels[t-1].contactIds:
             kprev = runningModels[t-1].contactIds.index(cid)
-            totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - fs[t-1][6*kprev:6*kprev+6])/robotweight )*wfcont/2
+            totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - fs[t-1][6*kprev:6*kprev+6])/robotweight )*contiForceWeight/2
         else:
-            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight )*wfcont/2
+            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight )*contiForceWeight/2
         if cid in runningModels[t+1].contactIds:
             knext = runningModels[t+1].contactIds.index(cid)
-            totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - fs[t+1][6*knext:6*knext+6])/robotweight )*wfcont/2
+            totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - fs[t+1][6*knext:6*knext+6])/robotweight )*contiForceWeight/2
         else:
-            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight )*wfcont/2
-        
-#opti.subject_to( xs[T-1][cmodel.nq:] == 0 ) # v_T = 0
-#opti.subject_to( xs[T][cmodel.nq:] == 0 ) # v_T = 0
+            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight )*contiForceWeight/2
+
+### Terminal cost
 totalcost += 1000*casadi.sumsqr( xs[T][cmodel.nq:] )
-#opti.subject_to( terminalModel.base_translation(xs[T])[2] == z_target ) # z_com(T) = ref
-#totalcost += 1000*casadi.sumsqr( terminalModel.base_translation(xs[T])[2] - z_target )
-totalcost += 1000*casadi.sumsqr( terminalModel.base_translation(xs[T])[0] - x_target )
-#opti.subject_to( xs[T][3:6] == 0 ) # Base flat
+totalcost += 1000*casadi.sumsqr( terminalModel.base_translation(xs[T])[0] - X_TARGET )
 
 ### SOLVE
 opti.minimize(totalcost)
 s_opt = {
     'tol' : 1e-4,
     'acceptable_tol': 1e-4,
-    'max_iter': 1000,
+    'max_iter': 10,
 }
 opti.solver("ipopt", {}, s_opt) # set numerical backend
 
@@ -614,9 +589,9 @@ fs_sol0 = [ np.concatenate([ \
 viz.play(q_sol.T, terminalModel.dt)
 
 
-### CHECK ######################################################################################################
-### CHECK ######################################################################################################
-### CHECK ######################################################################################################
+# ## CHECK ########################################################################################
+# ## CHECK ########################################################################################
+# ## CHECK ########################################################################################
 
 ha = []
 
@@ -680,9 +655,7 @@ for i in range(3):
     plt.title('Base link position_' + legend[i])
     plt.plot(base_log[:, i])
     if i == 0:
-        plt.axhline(y = x_target, color = 'black', linestyle = '--')
-    #if i == 2:
-    #    plt.axhline(y = z_target, color = 'black', linestyle = '--')
+        plt.axhline(y = X_TARGET, color = 'black', linestyle = '--')
 
 
 plt.figure('cop time local')
