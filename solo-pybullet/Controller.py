@@ -10,7 +10,7 @@ class Results:
         self.tau_ff =  []
         self.tau = []
         self.x_m = []
-        self.ocp_storage = {'xs': [], 'us': [], 'fw': [], 'qj_des': [], 'vj_des': []}
+        self.ocp_storage = {'xs': [], 'us': [], 'fw': [], 'qj_des': [], 'vj_des': [], 'residuals' : {'inf_pr': [], 'inf_du': []}}
 
 
 class Controller:
@@ -86,6 +86,9 @@ class Controller:
         self.results.qj_des += [x[:, 7: self.nq][1]]
         self.results.vj_des += [x[:, self.nq + 6: ][1]]
         self.results.tau_ff += [u[0]]
+
+        self.results.ocp_storage['residuals']['inf_pr'] += [self.ocp.opti.stats()['iterations']['inf_pr']]
+        self.results.ocp_storage['residuals']['inf_du'] += [self.ocp.opti.stats()['iterations']['inf_du']]
 
             
 

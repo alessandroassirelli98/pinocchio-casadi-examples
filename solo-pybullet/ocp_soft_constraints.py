@@ -160,26 +160,20 @@ class ShootingNode():
         return(casadi.vertcat(*eq))
     
     def constraint_standing_feet_eq(self):
-        eq = []
         for stFoot in self.contactIds:
-            eq.append(self.afeet[stFoot](self.x, self.a) ) # stiff contact
-
-        return(casadi.vertcat(*eq))
+            self.cost += conf.st_feet_weight* casadi.sumsqr(self.afeet[stFoot](self.x, self.a)) # stiff contact
             
     def constraint_standing_feet_ineq(self):
         # Friction cone
-        ineq = []
         for i, stFoot in enumerate(self.contactIds):
             R = self.Rfeet[stFoot](self.x)
             f_ = self.fs[i]
             fw = R @ f_
-            ineq.append(-fw[2] + self.robotweight/ (4*len(self.contactIds)) )
-            ineq.append( fw[0] - conf.mu*fw[2] )
+            self.cost += conf.st_feet_weight* casadi.sumsqr(fw[2] - (4*len(self.contactIds)))
+            """ ineq.append( fw[0] - conf.mu*fw[2] )
             ineq.append( -fw[0] - conf.mu*fw[2] )
             ineq.append(  fw[1] - conf.mu*fw[2] )
-            ineq.append( -fw[1] - conf.mu*fw[2] )
- 
-        return(casadi.vertcat(*ineq))
+            ineq.append( -fw[1] - conf.mu*fw[2] ) """
 
     def constraint_dynamics_eq(self):
         eq = []
@@ -221,6 +215,9 @@ class ShootingNode():
         self.control_cost(u_ref)
         self.body_reg_cost(x_ref=x_ref)
         self.target_cost(target)
+
+        self.constraint_standing_feet_ineq()
+        self.constraint_standing_feet_eq()
 
         return self.cost
 
@@ -352,16 +349,6 @@ class OCP():
         
         return feet_log
 
-    def get_feet_velocity(self, xs_sol):
-        feet_log = {i:[] for i in self.allContactIds}
-        for foot in feet_log:
-            tmp = []
-            for i in range(len(xs_sol)):
-                tmp += [ self.terminalModel.vfeet[foot](xs_sol[i]).full()[:, 0] ]
-            feet_log[foot] = np.array(tmp)
-        
-        return feet_log
-
     def get_base_log(self, xs_sol):
         
         base_pos_log = []
@@ -386,24 +373,16 @@ class OCP():
             xnext,rcost = self.runningModels[t].calc(x_ref=self.x_ref,u_ref=self.u_ref, target=self.target[t])
 
             # Constraints
-            eq.append(self.runningModels[t].constraint_standing_feet_eq() )
-            eq.append(self.runningModels[t].constraint_dynamics_eq() )
+            eq.append(self.runningModels[t].constraint_dynamics_eq())
             eq.append( self.runningModels[t].difference(self.xs[t + 1],xnext) - np.zeros(2*self.runningModels[t].nv) )
-
-            ineq.append(self.runningModels[t].constraint_swing_feet_ineq(x_ref=self.x_ref)) 
-            ineq.append(self.runningModels[t].constraint_standing_feet_ineq())
-            #ineq.append(self.us[t] - self.effort_limit)
-            #ineq.append(-self.us[t] - self.effort_limit)
 
             totalcost += rcost
 
-        #eq.append(self.xs[self.T][self.terminalModel.nq :])
         totalcost += conf.terminal_cost * casadi.sumsqr(self.xs[self.T][self.terminalModel.nq:]) * self.dt
 
         eq_constraints = casadi.vertcat(*eq)
-        ineq_constraints = casadi.vertcat(*ineq)
 
-        return totalcost, eq_constraints, ineq_constraints
+        return totalcost, eq_constraints
 
     def use_ipopt_solver(self, guess = None):
 
@@ -420,12 +399,11 @@ class OCP():
             self.fs.append(f_tmp)
         self.fs = self.fs
 
-        cost, eq_constraints, ineq_constraints = self.make_ocp()
+        cost, eq_constraints = self.make_ocp()
 
         opti.minimize(cost)
 
         opti.subject_to(eq_constraints == 0)
-        opti.subject_to(ineq_constraints <= 0)
 
         
 

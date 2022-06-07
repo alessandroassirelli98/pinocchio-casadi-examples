@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from Controller import Controller, Results
 
-horizon = 10
+horizon = 50
 dt_ocp = 0.015
 dt_sim = 0.001
 r = int(dt_ocp/dt_sim)
@@ -44,6 +44,7 @@ def store_measures(all=True):
 
 def send_torques():
     q, v = interpolate_traj(ctrl.results.qj_des[-1], ctrl.results.vj_des[-1])
+    local_res.tau_ff.append(ctrl.results.tau_ff[-1])
     for t in range(r):
         device.joints.set_desired_positions(q[t])
         device.joints.set_desired_velocities(v[t])
@@ -65,14 +66,14 @@ def control_loop(ctrl):
         measures = read_state()
         
         ctrl.create_target(t)
-        ctrl.compute_step(ctrl.results.ocp_storage['xs'][-1][1, :], ctrl.x0, ctrl.u0)
         ctrl.shift_gate()
-
+        ctrl.compute_step(measures['x_m'], ctrl.x0, ctrl.u0)
+        
         send_torques()       
 
 
 if __name__ ==  '__main__':
-    ctrl = Controller(5, 15, dt_ocp)
+    ctrl = Controller(6, 15, dt_ocp)
     local_res = Results()
     device = Init_simulation(ctrl.qj0)
     store_measures()

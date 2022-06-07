@@ -107,8 +107,7 @@ def plot_mpc(ctrl, ocp_results, local_results, dt_simu):
     all_ocp_feet_log = [ctrl.ocp.get_feet_position(x)[18] for x in ctrl.results.ocp_storage['xs']]
     all_ocp_feet_log = np.array(all_ocp_feet_log)
 
-    u_mpc = []
-    [u_mpc.append(ocp_results.ocp_storage['us'][i][1, :]) for i in range(horizon)]
+    u_mpc = local_results.tau_ff
     u_mpc = np.array(u_mpc)
     all_u_log = np.array(ocp_results.ocp_storage['us'])
     u_m = np.array(local_results.tau)
@@ -143,7 +142,7 @@ def plot_mpc(ctrl, ocp_results, local_results, dt_simu):
     for p in range(12):
         plt.subplot(12,1, p+1)
         plt.title('u ' + str(p))
-        for i in range(horizon-1):
+        for i in range(horizon):
             t = np.linspace(i*ctrl.dt, (ctrl.ocp.T+ i)*ctrl.dt, ctrl.ocp.T+1)
             y = all_u_log[i][:,p]
             for j in range(len(y) - 1):
