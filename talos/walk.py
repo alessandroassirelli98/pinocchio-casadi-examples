@@ -115,11 +115,10 @@ def listOfForcesToArrayWithZeros( forceList ):
                    for t,f in enumerate(forceList) ]
     return forceArray
 
-var_R = casadi.SX.sym('R', 3, 3)
-var_R_ref = casadi.SX.sym('R_ref', 3, 3)
-so3_diff = casadi.Function('so3_diff', [var_R, var_R_ref], [cpin.log3(var_R.T @ var_R_ref)])
-so3_log = casadi.Function('so3_log', [var_R], [cpin.log3(var_R)])
-
+sym_R = casadi.SX.sym('R', 3, 3)
+sym_R_ref = casadi.SX.sym('R_ref', 3, 3)
+so3_diff = casadi.Function('so3_diff', [sym_R, sym_R_ref], [cpin.log3(sym_R.T @ sym_R_ref)])
+so3_log = casadi.Function('so3_log', [sym_R], [cpin.log3(sym_R)])
 ###################################################################################################
 ### TUNING ########################################################################################
 ###################################################################################################
@@ -144,28 +143,34 @@ STATE_WEIGHT = 1*np.array(  \
 assert(len(STATE_WEIGHT)==model.nv*2)
 
 ### Gains for force continuity: wfref for tracking the reference, wfcont for time difference
-contiTorqueWeight = 0
 refTorqueWeight = 0
-refStateWeight = 5e-2
-flatBaseWeight = 0 # 1e-1
-minForceWeight = 1e-2*np.array([1,1,.1,10,10,2])
-comWeight = 0 # 1e-1
-vcomWeight = 8e-1
-acomWeight = 0 # 8e-1*DT
-copWeight = 1e-2
-verticalFootVelWeight = 0.1
-footVelWeight = 0 # 0.1
-footAccWeight = 0 # 0.01
-refFootFlyingAltitude = 3e-2
-footMinimalDistance = .1 # 0.1  (.17 is the max value wrt initial config)x
-lowbandwidthweight = 0 # 1e-3
-minTorqueDiffWeight = 0 # 1e-4
+refStateWeight = 1e-1
+flatBaseWeight = 0 # 20
+forceImportance = np.array([1,1,.1,10,10,2])
+coneAxisWeight =  2e-4
+comWeight = 0 # 20
+vcomWeight = 160
+acomWeight = 0 # 16*DT
+copWeight = 2
+verticalFootVelWeight = 20
+footVelWeight = 0 # 20
+footAccWeight = 0 # 2
 
+lowbandwidthweight = 0 # 2e-1
+minTorqueDiffWeight = 0 # 2e-2
+
+refForceWeight = 10
+contiForceWeight = 0
+
+refMainJointsAtImpactWeight = 2e2
+
+terminalNoVelocityWeight = 2000
+terminalXTargetWeight = 2000
+
+refFootFlyingAltitude = 3e-2
+footMinimalDistance = .1 # 0.1  (.17 is the max value wrt initial config)
 MAIN_JOINTS = [ 0,1,3 ]
 MAIN_JOINTS = [ i+7 for i in MAIN_JOINTS ] + [ i+13 for i in MAIN_JOINTS ]
-refMainJointsAtImpactWeight = 1e2
-refForceWeight = 5e-2
-contiForceWeight = 0
 
 # #################################################################################################
 # ## ACTION MODEL #################################################################################
@@ -310,17 +315,17 @@ class CasadiActionModel:
         # Cost functions:
         cost = 0
         # Follow reference torque
-        # ##0## cost += refTorqueWeight*casadi.sumsqr(u-self.u0) * self.dt
+        # ##0## cost += refTorqueWeight* casadi.sumsqr(u-self.u0)/2
         # Follow reference state
-        cost += refStateWeight*casadi.sumsqr( self.wdifference(x,x0,STATE_WEIGHT) ) * self.dt
+        cost += refStateWeight *casadi.sumsqr( self.wdifference(x,x0,STATE_WEIGHT) )/2
         # Keep basis horizontal
-        # ##0## cost += flatBaseWeight * casadi.sumsqr(x[3:6]) # Keep base flat
+        # ##0## cost += flatBaseWeight * casadi.sumsqr(x[3:6])/2 # Keep base flat
         # Keep 6d contact forces at cone center, ie only f[2] should be nonzero
-        cost += sum( [ casadi.sumsqr((f*minForceWeight)[[0,1,3,4,5]]) for f in fs ] ) * self.dt
+        cost += coneAxisWeight * sum( [ casadi.sumsqr((f*forceImportance)[[0,1,3,4,5]])/2 for f in fs ] )
         # Penalize com and derivatives of com
-        # ##0## cost += comWeight* casadi.sumsqr( self.com(x)[2]-com0[2] )
-        cost += vcomWeight* casadi.sumsqr( self.vcom(x)[2] )
-        # ##0## cost += acomWeight* casadi.sumsqr( self.acom(x,a)[2] )
+        # ##0## cost += comWeight* casadi.sumsqr( self.com(x)[2]-com0[2] )/2
+        cost += vcomWeight* casadi.sumsqr( self.vcom(x)[2] )/2
+        # ##0## cost += acomWeight* casadi.sumsqr( self.acom(x,a)[2] )/2
         
         ### OCP additional constraints
 
@@ -337,13 +342,13 @@ class CasadiActionModel:
             ocp.subject_to( tauw[:2]/fw[2] <= FOOT_SIZE )
             ocp.subject_to( tauw[:2]/fw[2] >= -FOOT_SIZE )
             # Minimize COP deviation as well
-            cost += copWeight*casadi.sumsqr(tauw[:2]/fw[2]/FOOT_SIZE)
+            cost += copWeight* casadi.sumsqr(tauw[:2]/fw[2]/FOOT_SIZE)/2
 
         for fid in contactIds:
             if fid in self.contactIds: continue
-            cost += verticalFootVelWeight*casadi.sumsqr(self.vfeet[fid](x)[2])
-            # ##0## cost += footVelWeight*casadi.sumsqr(self.vfeet[fid](x))
-            # ##0## cost += footAccWeight*casadi.sumsqr(self.afeet[fid](x,a)[:3])
+            cost += verticalFootVelWeight *casadi.sumsqr(self.vfeet[fid](x)[2])/2
+            # ##0## cost += footVelWeight *casadi.sumsqr(self.vfeet[fid](x))/2
+            # ##0## cost += footAccWeight *casadi.sumsqr(self.afeet[fid](x,a)[:3])/2
 
             # Foot altitude should be above ground
             ocp.subject_to( self.feet[fid](x)[2]>=0 )
@@ -354,7 +359,8 @@ class CasadiActionModel:
             ### Avoid collision between feet
             for cid in self.contactIds:
                 ocp.subject_to( casadi.sumsqr(self.feet[fid](x)[:2]-self.feet[cid](x)[:2]) >= footMinimalDistance**2)
-            
+
+        cost *= DT
         return xnext,cost
 
 
@@ -420,7 +426,7 @@ for t in range(T):
             opti.subject_to( runningModels[t].Rfeet[c](xs[t])[1,2] == 0) # No rotation on pitch
 
             # Keep main joints in standard configuration at impact.
-            totalcost +=  refMainJointsAtImpactWeight*casadi.sumsqr( xs[t][MAIN_JOINTS] - model.q0[MAIN_JOINTS] )
+            totalcost +=  refMainJointsAtImpactWeight*casadi.sumsqr( xs[t][MAIN_JOINTS] - model.q0[MAIN_JOINTS] )/2
 
     # Bandwidth cost
     if t>1:
@@ -430,12 +436,12 @@ for t in range(T):
         ALPHA = 0.75
 
         ### Sebastien formulation ... lead to poooooor results (reference torque likely too bad)
-        # ##0## totalcost += lowBandwidthWeight*casadi.sumsqr((us[t][3:6]-(1-ALPHA)*us[t-1][3:6])/ALPHA - runningModels[t].u0[3:6])
-        # ##0## totalcost += lowBandwidthWeight*casadi.sumsqr((us[t][8:12]-(1-ALPHA)*us[t-1][8:12])/ALPHA - runningModels[t].u0[8:12])
+        # ##0## totalcost += lowBandwidthWeight*DT* casadi.sumsqr((us[t][3:6]-(1-ALPHA)*us[t-1][3:6])/ALPHA - runningModels[t].u0[3:6])/2
+        # ##0## totalcost += lowBandwidthWeight*DT* casadi.sumsqr((us[t][8:12]-(1-ALPHA)*us[t-1][8:12])/ALPHA - runningModels[t].u0[8:12])/2
 
         ### Min diff torque, working soso, could work with some tuning, might not be needed.
-        # ##0## totalcost += minTorqueDiffWeight*casadi.sumsqr((us[t][3:6]-us[t-1][3:6]))
-        # ##0## totalcost += minTorqueDiffWeight*casadi.sumsqr((us[t][8:12]-us[t-1][8:12]))
+        # ##0## totalcost += minTorqueDiffWeight*DT* casadi.sumsqr((us[t][3:6]-us[t-1][3:6]))/2
+        # ##0## totalcost += minTorqueDiffWeight*DT* casadi.sumsqr((us[t][8:12]-us[t-1][8:12]))/2
             
 
 # ### FORCE COST ###
@@ -464,25 +470,25 @@ referenceForces = [
 ### Make forces track the reference (smooth) trajectory
 for t,(refs,r) in enumerate(zip(referenceForces,runningModels)):
     for k,f in enumerate(refs):
-        totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - f)/robotweight ) * refForceWeight
+        totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - f)/robotweight )/2 * refForceWeight*DT
 
 ### Make the forces time smooth
 for t in range(1,T-1):
     for k,cid in enumerate(runningModels[t].contactIds):
         if cid in runningModels[t-1].contactIds:
             kprev = runningModels[t-1].contactIds.index(cid)
-            totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - fs[t-1][6*kprev:6*kprev+6])/robotweight )*contiForceWeight/2
+            totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - fs[t-1][6*kprev:6*kprev+6])/robotweight )/2*contiForceWeight/2*DT
         else:
-            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight )*contiForceWeight/2
+            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight )/2*contiForceWeight/2*DT
         if cid in runningModels[t+1].contactIds:
             knext = runningModels[t+1].contactIds.index(cid)
-            totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - fs[t+1][6*knext:6*knext+6])/robotweight )*contiForceWeight/2
+            totalcost += casadi.sumsqr( (fs[t][6*k:6*k+6] - fs[t+1][6*knext:6*knext+6])/robotweight )/2*contiForceWeight/2*DT
         else:
-            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight )*contiForceWeight/2
+            totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight )/2*contiForceWeight/2*DT
 
 ### Terminal cost
-totalcost += 1000*casadi.sumsqr( xs[T][cmodel.nq:] )
-totalcost += 1000*casadi.sumsqr( terminalModel.base_translation(xs[T])[0] - X_TARGET )
+totalcost += terminalNoVelocityWeight*casadi.sumsqr( xs[T][cmodel.nq:] )/2
+totalcost += terminalXTargetWeight*casadi.sumsqr( terminalModel.base_translation(xs[T])[0] - X_TARGET )/2
 
 ### SOLVE
 opti.minimize(totalcost)
@@ -522,7 +528,7 @@ try:
         opti.set_initial(u,u_g)
     for ac,ac_g in zip(acs,guess['acs']):
         opti.set_initial(ac,ac_g)
-    print('Done with reading warm start from file')
+    print(f'Done with reading warm start from file "{GUESS_FILE}"')
 except:
     # If initial guess cannot be red properly, build it as quasi-static start.
     print('Warm start from file failed, now building a quasistatic guess')
@@ -756,7 +762,22 @@ for i,cid in enumerate(contactIds):
     hplot.extend(plt.plot(np.sqrt(np.sum(footvtraj[:,6*i:6*i+2]**2,1))))
 plt.legend(hplot,names)
 plt.ylabel('horz vel')
-   
+
+plt.figure('foot collision')
+h1=plt.plot([ f[0] for f in foottraj], [f[1] for f in foottraj])
+h2=plt.plot([ f[3] for f in foottraj], [f[4] for f in foottraj])
+plt.legend(h1+h2 ,['left','right'])
+for t in range(T):
+    a = foottraj[t][:2]
+    b = foottraj[t][3:5]
+    m = (a+b)/2
+    d = (b-a)
+    d /= norm(d)
+    aa = m+d*footMinimalDistance/2
+    bb = m-d*footMinimalDistance/2
+    plt.plot([aa[0],bb[0]],[aa[1],bb[1]],'grey')
+plt.axis([ -.1,0.4,-.25,.25 ])
+
 # ### SAVE #####################################################################
 #plt.show()
 def save():
