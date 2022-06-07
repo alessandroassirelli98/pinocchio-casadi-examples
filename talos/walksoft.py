@@ -159,9 +159,18 @@ verticalFootVelWeight = 0.1
 footVelWeight = 0 # 0.1
 footAccWeight = 0 # 0.01
 refFootFlyingAltitude = 3e-2
-footMinimalDistance = .1 # 0.1  (.17 is the max value wrt initial config)x
+footMinimalDistance = .1 # 0.1  (.17 is the max value wrt initial config)
 lowbandwidthweight = 0 # 1e-3
 minTorqueDiffWeight = 0 # 1e-4
+impactAltitudeWeight = 10000
+impactVelocityWeight = 100
+impactRotationWeight = 100
+terminalNoVelocityWeight = 1000
+terminalXTargetWeight = 1000
+flyWeight = .1
+groundColWeight = 1
+coneAxisWeight =  1
+conePenaltyWeight = 1
 
 MAIN_JOINTS = [ 0,1,3 ]
 MAIN_JOINTS = [ i+7 for i in MAIN_JOINTS ] + [ i+13 for i in MAIN_JOINTS ]
@@ -318,7 +327,7 @@ class CasadiActionModel:
         # Keep basis horizontal
         # ##0## cost += flatBaseWeight * casadi.sumsqr(x[3:6]) # Keep base flat
         # Keep 6d contact forces at cone center, ie only f[2] should be nonzero
-        cost += sum( [ casadi.sumsqr((f*minForceWeight)[[0,1,3,4,5]]) for f in fs ] ) * self.dt
+        cost += coneAxisWeight * sum( [ casadi.sumsqr((f*minForceWeight)[[0,1,3,4,5]]) for f in fs ] ) * self.dt
         # Penalize com and derivatives of com
         # ##0## cost += comWeight* casadi.sumsqr( self.com(x)[2]-com0[2] )
         cost += vcomWeight* casadi.sumsqr( self.vcom(x)[2] )
@@ -339,11 +348,11 @@ class CasadiActionModel:
             # ocp.subject_to( tauw[:2]/fw[2] <= FOOT_SIZE )
             # ocp.subject_to( tauw[:2]/fw[2] >= -FOOT_SIZE )
             
-            cost += casadi.if_else(fw[2]>=1,0,(fw[2]-1)**2)
-            cost += casadi.if_else( tauw[0] <= fw[2]*FOOT_SIZE, 0, (tauw[0]-fw[2]*FOOT_SIZE)**2 )
-            cost += casadi.if_else( tauw[0] >= -fw[2]*FOOT_SIZE, 0, (tauw[0]+fw[2]*FOOT_SIZE)**2 )
-            cost += casadi.if_else( tauw[1] <= fw[2]*FOOT_SIZE, 0, (tauw[1]-fw[2]*FOOT_SIZE)**2 )
-            cost += casadi.if_else( tauw[1] >= -fw[2]*FOOT_SIZE, 0, (tauw[1]+fw[2]*FOOT_SIZE)**2 )
+            cost += conePenaltyWeight * casadi.if_else(fw[2]>=1,0,(fw[2]-1)**2)
+            cost += conePenaltyWeight * casadi.if_else( tauw[0] <= fw[2]*FOOT_SIZE, 0, (tauw[0]-fw[2]*FOOT_SIZE)**2 )
+            cost += conePenaltyWeight * casadi.if_else( tauw[0] >= -fw[2]*FOOT_SIZE, 0, (tauw[0]+fw[2]*FOOT_SIZE)**2 )
+            cost += conePenaltyWeight * casadi.if_else( tauw[1] <= fw[2]*FOOT_SIZE, 0, (tauw[1]-fw[2]*FOOT_SIZE)**2 )
+            cost += conePenaltyWeight * casadi.if_else( tauw[1] >= -fw[2]*FOOT_SIZE, 0, (tauw[1]+fw[2]*FOOT_SIZE)**2 )
 
             # Minimize COP deviation as well
             cost += copWeight*casadi.sumsqr(tauw[:2]/fw[2]/FOOT_SIZE)
@@ -358,11 +367,11 @@ class CasadiActionModel:
             #ocp.subject_to( self.feet[fid](x)[2]>=0 )
             # Foot horizontal velocity should be lower than its (normalized) altitude
             #ocp.subject_to( casadi.sumsqr(self.vfeet[fid](x)[:2]) <= (self.feet[fid](x)[2]/refFootFlyingAltitude))
-            cost += casadi.if_else( self.tows[fid](x)[2]>=0,0,self.tows[fid](x)[2]**2 )
-            cost += .1*v_activ( 5*self.tows[fid](x)[2]/refFootFlyingAltitude ) \
+            cost += groundColWeight*casadi.if_else( self.tows[fid](x)[2]>=0,0,self.tows[fid](x)[2]**2 )
+            cost += flyWeight*v_activ( 5*self.tows[fid](x)[2]/refFootFlyingAltitude ) \
                 *  casadi.sumsqr(self.vtows[fid](x)[:2])
-            cost += casadi.if_else( self.heels[fid](x)[2]>=0,0,self.heels[fid](x)[2]**2 )
-            cost += .1*v_activ( 5*self.heels[fid](x)[2]/refFootFlyingAltitude ) \
+            cost += groundColWeight*casadi.if_else( self.heels[fid](x)[2]>=0,0,self.heels[fid](x)[2]**2 )
+            cost += flyWeight*v_activ( 5*self.heels[fid](x)[2]/refFootFlyingAltitude ) \
                 *  casadi.sumsqr(self.vheels[fid](x)[:2])
             
             #ocp.subject_to( casadi.sumsqr(self.vtows[fid](x)[:2]) <= (self.tows[fid](x)[2]/refFootFlyingAltitude))
@@ -503,8 +512,8 @@ for t in range(1,T-1):
             totalcost += casadi.sumsqr( fs[t][6*k:6*k+6]/robotweight )*contiForceWeight/2
 
 ### Terminal cost
-totalcost += 1000*casadi.sumsqr( xs[T][cmodel.nq:] )
-totalcost += 1000*casadi.sumsqr( terminalModel.base_translation(xs[T])[0] - X_TARGET )
+totalcost += terminalNoVelocityWeight*casadi.sumsqr( xs[T][cmodel.nq:] )
+totalcost += terminalXTargetWeight*casadi.sumsqr( terminalModel.base_translation(xs[T])[0] - X_TARGET )
 
 ### SOLVE
 opti.minimize(totalcost)
@@ -526,6 +535,7 @@ opti.callback(call)
 try:
     GUESS_FILE = None
     GUESS_FILE = '/tmp/sol.npy'
+    GUESS_FILE = 'walk_20dof_2steps.npy'
     #if True: ### Load warmstart from file
     guess = np.load(GUESS_FILE,allow_pickle=True)[()]
     if len(guess['xs'])!=len(contactPattern):
