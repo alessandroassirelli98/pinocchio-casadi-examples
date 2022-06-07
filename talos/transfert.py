@@ -298,8 +298,10 @@ class CasadiActionModel:
         # Contact force with positive normal and bounded COP
         for f,cid in zip(fs,self.contactIds):
             R = self.Rfeet[cid]
-            fw = R(x) @ f[:3]
-            tauw = R(x) @ f[3:]
+            #fw = R(x) @ f[:3]
+            #tauw = R(x) @ f[3:]
+            fw =  f[:3]
+            tauw =  f[3:]
             # ocp.subject_to(fw[2]>=1)
             # ocp.subject_to( tauw[:2]/fw[2] <= FOOT_SIZE )
             # ocp.subject_to( tauw[:2]/fw[2] >= -FOOT_SIZE )
