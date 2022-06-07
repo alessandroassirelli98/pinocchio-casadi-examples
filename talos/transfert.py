@@ -34,6 +34,7 @@ So the robot should just bend to reach altitude COM 80cm while stoping at the en
 The acceleration is introduced as an explicit (slack) variable to simplify the formation of the contact constraint.
 Contacts are 6d, yet only with normal forces positive, and 6d acceleration constraints. 
 
+
 '''
 
 import pinocchio as pin
