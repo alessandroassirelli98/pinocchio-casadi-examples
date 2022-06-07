@@ -10,8 +10,6 @@ from cop2forces import ContactForceDistributor
 
 GUESS_FILE = '/tmp/sol.npy'
 DT = 0.01
-
-
 robot = talos_low.load()
 model = robot.model
 data = model.createData()
@@ -68,7 +66,6 @@ def disp(t,withForce=True,scale=None):
     if scale is not None:
         scale.set(t)
 '''
-
 class Display:
     def __init__(self):
         self.contactForceDistribution = ContactForceDistributor(footShape)
@@ -118,6 +115,8 @@ class Display:
                     gv.addLine(name,p0.tolist(),p1.tolist(),[1,0,0,1])
 disp = Display()
 
+
+robot = talos_low.load()
 class Player():
     def __init__(self,timeScale):
         self.playing = False
@@ -153,7 +152,7 @@ class Player():
 
 root = tk.Tk()
 timeScale = tk.Scale(root, from_=0, to=len(xs)-1,command=disp,
-             orient=tk.HORIZONTAL,label='time',resolution=1,tickinterval=10,length=300)
+             orient=tk.HORIZONTAL,label='time',resolution=1,tickinterval=10,length=500)
 timeScale.pack()
 frame = tk.Frame(root)
 frame.pack()
@@ -171,6 +170,41 @@ checkForce = tk.Checkbutton(checkFrame, text='show forces',
                             command=disp.changeWithForce)
 checkForce.grid(column=0,row=0)
 checkForce.select()
+
+VIEW_FILE =  'tkviews.npy'
+views = {}
+try:
+    views = np.load(VIEW_FILE,allow_pickle=True)[()]
+except:
+    print('Error while loading tkviews.npy')
+
+class ChangeView:
+    def __init__(self,viewName):
+        self.viewName = viewName
+    def __call__(self):
+        print(f'Change for {self.viewName}')
+        gv.setCameraTransform(viz.windowID,views[self.viewName])
+def saveView():
+    print(f'Add view {entryName.get()}')
+    views[entryName.get()] = gv.getCameraTransform(viz.windowID)
+    np.save(open(VIEW_FILE, "wb"),views)
+    
+viewFrame = tk.Frame(root)
+viewFrame.pack()
+for n in views.keys():
+    view1 = tk.Button(viewFrame,text=n,command=ChangeView(n))
+    view1.pack(side=tk.LEFT)#
+    #view1.grid(column=0,row=0)
+
+confFrame = tk.Frame(root)
+confFrame.pack()
+tk.Label(confFrame,text='Add a view: ').grid(column=0,row=0)
+entryName = tk.Entry(confFrame,text='Name:')
+entryName.grid(column=1,row=0)
+#tk.Label(confFrame,text='id').grid(column=2,row=0)
+#entryNumber = tk.Entry(confFrame,text='Id:')
+#entryNumber.grid(column=3,row=0)
+tk.Button(confFrame,text='Save',command=saveView).grid(column=4,row=0)
 
 root.bind('<Escape>',lambda event: root.destroy())
 root.bind('<Right>',lambda event: play.next())
