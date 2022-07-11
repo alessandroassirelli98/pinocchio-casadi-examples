@@ -25,8 +25,8 @@ path = os.getcwd()
 # Hyperparameters defining the optimal control problem.
 DT = 0.015
 mu = 1
-kx = 30
-ky = 30
+kx = 20
+ky = 20
 k = np.array([kx, ky])
 lin_vel_weight = np.array([10, 10, 10])
 ang_vel_weight = np.array([10, 10, 10])
@@ -36,8 +36,8 @@ base_reg_cost = 1e1
 joints_reg_cost = 1e2
 sw_feet_reg_cost = 1e1
 
-timestep_per_phase = 12
-v_lin_target = np.array([3, 0, 0])
+timestep_per_phase = 18
+v_lin_target = np.array([2, 0, 0])
 v_ang_target = np.array([0, 0, 0])
 ### LOAD AND DISPLAY SOLO
 # Load the robot model from example robot data and display it if possible in Gepetto-viewer
@@ -239,7 +239,7 @@ contactPattern = [] \
     + [ [ 1,0,0,1 ] ] * timestep_per_phase  \
     + [ [ 0,1,1,0 ] ] * timestep_per_phase
 
-contactPattern = contactPattern*2
+contactPattern = contactPattern*3
 #contactPattern = np.roll(contactPattern, -6, axis=0)
 
 T = len(contactPattern) - 1
@@ -293,7 +293,7 @@ for t in range(T):
 opti.subject_to(xs[T][cmodel.nq :] == 0)
 opti.minimize(totalcost)
 
-p_opts = {}
+p_opts = {"expand": True}
 s_opts = {}
 opti.solver("ipopt",p_opts,
                     s_opts)
